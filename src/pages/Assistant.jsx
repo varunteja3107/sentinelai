@@ -82,7 +82,7 @@ function Assistant() {
         ...prev,
         {
           role: "assistant",
-          text: "Unable to connect to the SentinelAI security engine. Make sure the FastAPI backend is running on port 8000.",
+          text: "Unable to connect to the SecureX AI security engine. Make sure the FastAPI backend is running on port 8000.",
         },
       ]);
     } finally {
@@ -104,7 +104,7 @@ function Assistant() {
               <div>
                 <h1>AI Security Assistant</h1>
                 <p>
-                  Ask SentinelAI about threats, risk and security decisions
+                  Ask SecureX AI about threats, risk and security decisions
                 </p>
               </div>
             </div>
@@ -126,7 +126,7 @@ function Assistant() {
               </div>
 
               <div>
-                <h2>SentinelAI Assistant</h2>
+                <h2>SecureX AI Assistant</h2>
                 <span>Security intelligence engine</span>
               </div>
             </div>
@@ -139,7 +139,7 @@ function Assistant() {
                     <Sparkles size={24} />
                   </div>
 
-                  <h3>Hello, I'm SentinelAI Security Assistant.</h3>
+                  <h3>Hello, I'm SecureX AI Security Assistant.</h3>
 
                   <p>
                     Ask me about threats, risk scores, blocked connections,

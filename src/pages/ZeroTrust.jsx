@@ -71,7 +71,7 @@ function ZeroTrust() {
 
       setResult({
         decision: "ERROR",
-        reason: "Unable to connect to SentinelAI backend.",
+        reason: "Unable to connect to SecureX AI backend.",
       });
 
     } finally {

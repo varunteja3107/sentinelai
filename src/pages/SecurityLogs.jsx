@@ -104,7 +104,7 @@ function SecurityLogs() {
 
             <div>
               <h2>Incident Timeline</h2>
-              <p>Live security events from SentinelAI</p>
+              <p>Live security events from SecureX AI</p>
             </div>
 
             <div className="logs-search">

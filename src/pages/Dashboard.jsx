@@ -11,9 +11,7 @@ import {
 import PageLayout from "../components/PageLayout";
 
 const API = "https://sentinelai-wnno.onrender.com";
-
-function Dashboard() {
-  const [dashboard, setDashboard] = useState(null);
+function Dashboard()
   const [threats, setThreats] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -73,7 +71,7 @@ function Dashboard() {
 
     } catch (error) {
       console.error(error);
-      setMessage("Unable to connect to SentinelAI backend.");
+      setMessage("Unable to connect to SecureX AI backend.");
     } finally {
       setLoading(false);
     }

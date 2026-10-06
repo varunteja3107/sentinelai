@@ -137,7 +137,7 @@ function Incidents() {
               <h3>No Security Incidents</h3>
 
               <p>
-                SentinelAI has not generated any incidents yet.
+                SecureX AI has not generated any incidents yet.
               </p>
             </div>
 

@@ -41,7 +41,7 @@ function FirewallRules() {
       console.error(error);
 
       setMessage(
-        "Unable to connect to SentinelAI backend."
+        "Unable to connect to SecureX AI backend."
       );
 
     } finally {

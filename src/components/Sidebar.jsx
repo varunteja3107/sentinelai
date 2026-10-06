@@ -78,7 +78,7 @@ function Sidebar() {
 
         <div>
           <div className="brand-name">
-            SentinelAI
+            SecureX AI
           </div>
 
           <div className="brand-subtitle">

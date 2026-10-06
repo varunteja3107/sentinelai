@@ -12,7 +12,7 @@ function Settings() {
   return (
     <PageLayout
       title="Settings"
-      subtitle="Configure SentinelAI security preferences"
+      subtitle="Configure SecureX AI security preferences"
     >
       <div className="settings-page">
 
@@ -114,7 +114,7 @@ function Settings() {
 
             <div>
               <h2>System</h2>
-              <p>SentinelAI infrastructure status</p>
+              <p>SecureX AI infrastructure status</p>
             </div>
           </div>
 
