@@ -15,24 +15,24 @@ Base.metadata.create_all(bind=engine)
 
 
 app = FastAPI(
+
+
+
     title="SentinelAI API",
     version="1.0.0"
 )
 
-
 app.add_middleware(
     CORSMiddleware,
-
-    allow_origins=[
-        "http://localhost:5173"
-    ],
-
-    allow_credentials=True,
-
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
-
     allow_headers=["*"],
 )
+
+
+
+
 
 
 ai = ThreatDetectionAI()
