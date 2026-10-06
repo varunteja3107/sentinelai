@@ -1,0 +1,12 @@
+/*
+  SentinelAI uses index.css for the complete application layout.
+  This file intentionally contains no Vite starter styles.
+*/
+
+#root {
+  width: 100%;
+  min-width: 100%;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+}
