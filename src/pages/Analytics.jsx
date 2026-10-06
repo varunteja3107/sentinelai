@@ -14,7 +14,7 @@ import {
 
 import PageLayout from "../components/PageLayout";
 
-const API = "http://localhost:8000";
+const API = "https://sentinelai-wnno.onrender.com";
 
 function Analytics() {
   const [data, setData] = useState(null);

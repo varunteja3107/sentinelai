@@ -9,7 +9,7 @@ import {
 
 import PageLayout from "../components/PageLayout";
 
-const API = "http://127.0.0.1:8000";
+const API = "https://sentinelai-wnno.onrender.com";
 
 function ThreatDetection() {
   const [threats, setThreats] = useState([]);

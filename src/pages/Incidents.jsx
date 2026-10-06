@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import PageLayout from "../components/PageLayout";
 
-const API = "http://localhost:8000";
+const API = "https://sentinelai-wnno.onrender.com";
 
 function Incidents() {
   const [incidents, setIncidents] = useState([]);

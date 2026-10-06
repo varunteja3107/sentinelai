@@ -11,7 +11,7 @@ import {
 import PageLayout from "../components/PageLayout";
 import "./Assistant.css";
 
-const API = "http://127.0.0.1:8000";
+const API = "https://sentinelai-wnno.onrender.com";
 
 const quickQuestions = [
   "Why was the latest threat blocked?",
