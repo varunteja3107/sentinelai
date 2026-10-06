@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://sentinelai-alpha-liard.vercel.app/sitemap.xml

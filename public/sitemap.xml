@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://sentinelai-alpha-liard.vercel.app/</loc>
+  </url>
+  <url>
+    <loc>https://sentinelai-alpha-liard.vercel.app/threats</loc>
+  </url>
+  <url>
+    <loc>https://sentinelai-alpha-liard.vercel.app/network</loc>
+  </url>
+  <url>
+    <loc>https://sentinelai-alpha-liard.vercel.app/zero-trust</loc>
+  </url>
+  <url>
+    <loc>https://sentinelai-alpha-liard.vercel.app/firewall</loc>
+  </url>
+  <url>
+    <loc>https://sentinelai-alpha-liard.vercel.app/logs</loc>
+  </url>
+  <url>
+    <loc>https://sentinelai-alpha-liard.vercel.app/analytics</loc>
+  </url>
+  <url>
+    <loc>https://sentinelai-alpha-liard.vercel.app/incidents</loc>
+  </url>
+  <url>
+    <loc>https://sentinelai-alpha-liard.vercel.app/assistant</loc>
+  </url>
+  <url>
+    <loc>https://sentinelai-alpha-liard.vercel.app/settings</loc>
+  </url>
+</urlset>
