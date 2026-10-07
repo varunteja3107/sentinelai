@@ -43,9 +43,47 @@ function Dashboard() {
 
   const loadDashboard = async () => {
     try {
-      const response = await fetch(`${API}/api/dashboard`);
-      const result = await response.json();
-      setData(result);
+      const [
+        analyticsResponse,
+        scoreResponse,
+        firewallResponse,
+        zeroTrustResponse
+      ] = await Promise.all([
+        fetch(`${API}/api/analytics/summary`),
+        fetch(`${API}/api/security-score`),
+        fetch(`${API}/api/firewall/status`),
+        fetch(`${API}/api/zero-trust/status`)
+      ]);
+
+      if (
+        !analyticsResponse.ok ||
+        !scoreResponse.ok ||
+        !firewallResponse.ok ||
+        !zeroTrustResponse.ok
+      ) {
+        throw new Error("Backend API request failed");
+      }
+
+      const analytics = await analyticsResponse.json();
+      const score = await scoreResponse.json();
+      const firewall = await firewallResponse.json();
+      const zeroTrust = await zeroTrustResponse.json();
+
+      setData({
+        active_threats:
+          analytics.total_threats -
+          analytics.severity.low,
+        blocked_attacks: analytics.blocked,
+        security_alerts: analytics.total_threats,
+        security_score: score.score,
+        firewall_status: firewall.firewall,
+        firewall_mode: firewall.mode,
+        zero_trust_enabled: zeroTrust.enabled,
+        average_risk: analytics.average_risk,
+        average_anomaly: analytics.average_anomaly,
+        threat_types: analytics.threat_types,
+        severity: analytics.severity
+      });
     } catch (error) {
       console.error(error);
       setMessage("Unable to connect to SecureX AI backend.");
