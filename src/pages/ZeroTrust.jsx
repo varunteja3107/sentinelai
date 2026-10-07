@@ -34,7 +34,7 @@ export default function ZeroTrust() {
     setError("");
 
     try {
-      const response = await fetch(`${API}/api/zero-trust/evaluate`, {
+      const response = await fetch(`${API}/api/zero-trust/check`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
