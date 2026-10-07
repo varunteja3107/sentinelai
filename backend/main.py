@@ -774,3 +774,172 @@ def security_assistant(question: str, db: Session = Depends(get_db)):
         }
     }
 
+
+
+# ============================================================
+# SECURITY ANALYTICS
+# ============================================================
+
+@app.get("/api/analytics/summary")
+def analytics_summary(db: Session = Depends(get_db)):
+
+    threats = db.query(Threat).all()
+    total = len(threats)
+
+    blocked = sum(1 for t in threats if t.action == "BLOCK")
+    allowed = sum(1 for t in threats if t.action == "ALLOW")
+    mfa = sum(1 for t in threats if t.action == "MFA")
+
+    critical = sum(1 for t in threats if t.severity == "CRITICAL")
+    high = sum(1 for t in threats if t.severity == "HIGH")
+    medium = sum(1 for t in threats if t.severity == "MEDIUM")
+    low = sum(1 for t in threats if t.severity == "LOW")
+
+    average_risk = round(
+        sum(t.risk_score or 0 for t in threats) / total,
+        2
+    ) if total else 0
+
+    average_anomaly = round(
+        sum(t.anomaly_score or 0 for t in threats) / total,
+        2
+    ) if total else 0
+
+    threat_types = {}
+
+    for threat in threats:
+        threat_types[threat.threat_type] = (
+            threat_types.get(threat.threat_type, 0) + 1
+        )
+
+    return {
+        "total_threats": total,
+        "blocked": blocked,
+        "allowed": allowed,
+        "mfa": mfa,
+        "average_risk": average_risk,
+        "average_anomaly": average_anomaly,
+        "severity": {
+            "critical": critical,
+            "high": high,
+            "medium": medium,
+            "low": low
+        },
+        "threat_types": threat_types
+    }
+
+
+@app.get("/api/security-score")
+def security_score(db: Session = Depends(get_db)):
+
+    threats = db.query(Threat).all()
+
+    if not threats:
+        return {
+            "score": 100,
+            "status": "SECURE"
+        }
+
+    average_risk = sum(
+        t.risk_score or 0 for t in threats
+    ) / len(threats)
+
+    blocked_ratio = sum(
+        1 for t in threats if t.action == "BLOCK"
+    ) / len(threats)
+
+    score = (
+        100
+        - (average_risk * 0.6)
+        + (blocked_ratio * 20)
+    )
+
+    score = round(min(100, max(0, score)), 2)
+
+    if score >= 80:
+        status = "SECURE"
+    elif score >= 60:
+        status = "MODERATE"
+    else:
+        status = "AT RISK"
+
+    return {
+        "score": score,
+        "status": status
+    }
+
+
+@app.get("/api/threats/recent")
+def recent_threats(
+    limit: int = 20,
+    db: Session = Depends(get_db)
+):
+
+    threats = (
+        db.query(Threat)
+        .order_by(Threat.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "id": t.id,
+            "threat_type": t.threat_type,
+            "source_ip": t.source_ip,
+            "destination_ip": t.destination_ip,
+            "port": t.port,
+            "protocol": t.protocol,
+            "packets": t.packets,
+            "bytes_transferred": t.bytes_transferred,
+            "anomaly_score": t.anomaly_score,
+            "risk_score": t.risk_score,
+            "severity": t.severity,
+            "action": t.action,
+            "status": t.status,
+            "created_at": t.created_at
+        }
+        for t in threats
+    ]
+
+
+@app.get("/api/firewall/status")
+def firewall_status(db: Session = Depends(get_db)):
+
+    threats = db.query(Threat).all()
+
+    blocked = [
+        t.source_ip
+        for t in threats
+        if t.action == "BLOCK"
+    ]
+
+    return {
+        "firewall": "ACTIVE",
+        "mode": "AI ADAPTIVE",
+        "blocked_connections": len(blocked),
+        "blocked_ips": list(set(blocked)),
+        "dynamic_response": True,
+        "zero_trust": True,
+        "simulation_mode": True
+    }
+
+
+@app.get("/api/zero-trust/status")
+def zero_trust_status():
+
+    return {
+        "enabled": True,
+        "continuous_verification": True,
+        "least_privilege": True,
+        "risk_based_access": True,
+        "device_trust": True,
+        "identity_verification": True,
+        "adaptive_authentication": True,
+        "possible_decisions": [
+            "ALLOW",
+            "MFA",
+            "LIMIT",
+            "BLOCK"
+        ]
+    }
