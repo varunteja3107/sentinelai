@@ -1,4 +1,5 @@
 import { useState } from "react";
+import PageLayout from "../components/PageLayout";
 import {
   ShieldCheck,
   UserCheck,
@@ -76,12 +77,11 @@ export default function ZeroTrust() {
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#0B1120",
-        color: "#F8FAFC",
-        padding: "28px"
+  <PageLayout
+    title="Zero Trust Center"
+    subtitle="Continuous identity, device and risk-based access evaluation"
+  >
+    <div style={{ width: "100%", minWidth: 0
       }}
     >
       <div style={{ maxWidth: "1450px", margin: "0 auto" }}>
@@ -503,7 +503,8 @@ export default function ZeroTrust() {
           </div>
         </section>
       </div>
-    </div>
+      </div>
+    </PageLayout>
   );
 }
 

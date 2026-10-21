@@ -3963,3 +3963,265 @@ textarea {
     margin-left: 190px;
   }
 }
+
+/* =========================================================
+   SENTINELAI DASHBOARD POLISH
+   Overrides for the backend-connected dashboard
+   ========================================================= */
+
+.monitor-page {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.monitor-status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 14px 18px;
+  background: #0c1b2d;
+  border: 1px solid #1a2e46;
+  border-radius: 12px;
+}
+
+.monitor-status-banner > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.monitor-status-banner > div > span:first-of-type {
+  color: #e5edf7;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.monitor-status-muted {
+  color: #8495ad;
+  font-size: 12px;
+}
+
+.monitor-refresh-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 9px 14px;
+  color: #dbeafe;
+  background: #123253;
+  border: 1px solid #24517a;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.monitor-refresh-button:hover {
+  background: #19446b;
+}
+
+.monitor-refresh-button:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.monitor-error {
+  padding: 13px 16px;
+  color: #fecaca;
+  background: #351923;
+  border: 1px solid #74313d;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.monitor-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  width: 100%;
+}
+
+.monitor-stat {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+  min-height: 128px;
+  padding: 20px;
+  background: #0c1b2d;
+  border: 1px solid #1a2e46;
+  border-radius: 12px;
+}
+
+.monitor-stat > div:last-child {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 7px;
+  min-width: 0;
+}
+
+.monitor-stat strong {
+  color: #f1f5f9;
+  font-size: 27px;
+  line-height: 1.15;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.monitor-stat span {
+  color: #a9b8cb;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.monitor-stat small {
+  color: #8293aa;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.monitor-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+}
+
+.monitor-icon.purple {
+  color: #c084fc;
+  background: #30194b;
+}
+
+.monitor-icon.green {
+  color: #4ade80;
+  background: #103a2b;
+}
+
+.monitor-icon.blue {
+  color: #60a5fa;
+  background: #102f50;
+}
+
+.monitor-icon.orange {
+  color: #fb923c;
+  background: #442916;
+}
+
+.monitor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+  gap: 18px;
+  width: 100%;
+  align-items: stretch;
+}
+
+.monitor-card {
+  min-width: 0;
+  padding: 22px;
+  background: #0c1b2d;
+  border: 1px solid #1a2e46;
+  border-radius: 12px;
+}
+
+.monitor-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.monitor-card-header h2 {
+  margin: 0;
+  color: #e5edf7;
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.monitor-card-header p {
+  margin: 6px 0 0;
+  color: #8495ad;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.monitor-empty {
+  min-height: 170px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 22px 12px;
+  text-align: center;
+  color: #91a3ba;
+}
+
+.monitor-empty h3 {
+  margin: 0;
+  color: #e5edf7;
+  font-size: 23px;
+  line-height: 1.4;
+}
+
+.monitor-empty p {
+  max-width: 440px;
+  margin: 0;
+  color: #91a3ba;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.monitor-last-updated {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+@media (max-width: 1200px) {
+  .monitor-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .monitor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .monitor-stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .monitor-stat {
+    min-height: auto;
+  }
+
+  .monitor-status-banner {
+    align-items: flex-start;
+  }
+
+  .monitor-card {
+    padding: 16px;
+  }
+
+  .monitor-empty {
+    min-height: 140px;
+  }
+}

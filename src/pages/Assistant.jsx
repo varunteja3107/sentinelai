@@ -10,9 +10,7 @@ import {
 } from "lucide-react";
 import PageLayout from "../components/PageLayout";
 import "./Assistant.css";
-
 const API = "https://sentinelai-wnno.onrender.com";
-
 const quickQuestions = [
   "Why was the latest threat blocked?",
   "What is the current risk score?",
@@ -25,7 +23,6 @@ function Assistant() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [latestThreat, setLatestThreat] = useState(null);
-
   useEffect(() => {
     loadLatestThreat();
   }, []);

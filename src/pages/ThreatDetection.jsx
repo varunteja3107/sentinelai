@@ -1,3 +1,4 @@
+import PageLayout from "../components/PageLayout";
 import { useEffect, useState } from "react";
 import {
   Activity,
@@ -145,14 +146,8 @@ export default function ThreatDetection() {
   };
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#0B1120",
-        color: "#F8FAFC",
-        padding: "28px"
-      }}
-    >
+    <PageLayout title="Threat Detection">
+      <div style={{ width: "100%", minWidth: 0 }}>
       <div
         style={{
           maxWidth: "1500px",
@@ -790,10 +785,10 @@ export default function ThreatDetection() {
           }
         }
       `}</style>
-    </div>
+      </div>
+    </PageLayout>
   );
 }
-
 function StatCard({ icon, title, value, color }) {
   return (
     <div

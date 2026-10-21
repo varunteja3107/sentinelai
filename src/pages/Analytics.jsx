@@ -1,3 +1,4 @@
+import PageLayout from "../components/PageLayout";
 import { useEffect, useState } from "react";
 import {
   BarChart3,
@@ -67,15 +68,8 @@ export default function Analytics() {
   const threatTypes = Object.entries(data?.threat_types || {});
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#0B1120",
-        color: "#F8FAFC",
-        padding: "28px"
-      }}
-    >
-      <div style={{ maxWidth: "1450px", margin: "0 auto" }}>
+    <PageLayout title="Security Analytics">
+      <div style={{ width: "100%", minWidth: 0 }}>
         {/* Header */}
         <div
           style={{
@@ -470,7 +464,7 @@ export default function Analytics() {
           Live analytics • Auto-refresh every 10 seconds • SecureX AI
         </div>
       </div>
-    </div>
+    </PageLayout>
   );
 }
 

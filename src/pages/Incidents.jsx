@@ -1,3 +1,4 @@
+import PageLayout from "../components/PageLayout";
 import { useEffect, useState } from "react";
 import {
   AlertTriangle,
@@ -76,15 +77,8 @@ export default function Incidents() {
   const open = incidents.length - resolved;
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#0B1120",
-        color: "#F8FAFC",
-        padding: "28px"
-      }}
-    >
-      <div style={{ maxWidth: "1450px", margin: "0 auto" }}>
+    <PageLayout title="Incident Management">
+      <div style={{ width: "100%", minWidth: 0 }}>
         <div
           style={{
             display: "flex",
@@ -316,7 +310,7 @@ export default function Incidents() {
           </span>
         </div>
       </div>
-    </div>
+    </PageLayout>
   );
 }
 
