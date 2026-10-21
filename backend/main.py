@@ -993,7 +993,7 @@ async def preview_dataset(file: UploadFile = File(...)):
 
     MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
     COPY_CHUNK_BYTES = 8 * 1024 * 1024
-    PARSE_CHUNK_ROWS = 100_000
+    PARSE_CHUNK_ROWS = 10_000
 
     filename = file.filename or "dataset.csv"
 
@@ -1025,10 +1025,12 @@ async def preview_dataset(file: UploadFile = File(...)):
 
                 temp.write(part)
 
+        print(f"[DatasetLab] Upload received: {filename}, {total_bytes:,} bytes. Starting scan.", flush=True)
         if total_bytes == 0:
             raise HTTPException(status_code=400, detail="The file is empty.")
 
         row_count = 0
+        chunks_processed = 0
         columns = None
         numeric_columns = []
         label_column = None
@@ -1060,6 +1062,9 @@ async def preview_dataset(file: UploadFile = File(...)):
                     )
 
                 row_count += len(frame)
+                chunks_processed += 1
+                if chunks_processed % 5 == 0:
+                    print(f"[DatasetLab] Scanned {row_count:,} rows.", flush=True)
 
                 # Retain only the first 10 rows for the displayed preview.
                 if len(preview) < 10:
@@ -1093,6 +1098,7 @@ async def preview_dataset(file: UploadFile = File(...)):
                 detail="No tabular data rows found in the CSV.",
             )
 
+        print(f"[DatasetLab] Analysis complete: {row_count:,} rows.", flush=True)
         return {
             "filename": filename,
             "rows": row_count,

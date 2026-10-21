@@ -76,6 +76,7 @@ export default function DatasetLab() {
             {busy ? <RefreshCw size={17} /> : <Upload size={17} />}
             {busy ? "Analyzing CSV..." : "Upload & Analyze"}
           </button>
+          {busy && <p style={{ ...muted, marginTop: 10 }}>Large CSV files can take several minutes. Keep this tab open while SentinelAI processes the file in 10,000-row chunks.</p>}
           <p style={muted}>Uploads are used for dataset inspection. They do not automatically create firewall blocks.</p>
         </section>
 
