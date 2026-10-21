@@ -4225,3 +4225,74 @@ textarea {
     min-height: 140px;
   }
 }
+
+
+/* SentinelAI compact responsive navigation */
+@media (max-width: 900px) {
+  .app > .sidebar {
+    width: 68px !important;
+    min-width: 68px !important;
+    padding-left: 0;
+    padding-right: 0;
+    overflow-x: hidden;
+  }
+
+  .app > .sidebar .sidebar-brand {
+    justify-content: center;
+    padding: 16px 4px;
+  }
+
+  .app > .sidebar .sidebar-brand > div:not(.brand-icon) {
+    display: none !important;
+  }
+
+  .app > .sidebar .sidebar-nav {
+    padding: 0 6px;
+    gap: 7px;
+  }
+
+  .app > .sidebar .nav-item {
+    justify-content: center;
+    width: 100%;
+    padding: 13px 0;
+    gap: 0;
+  }
+
+  .app > .sidebar .nav-item span {
+    display: none !important;
+  }
+
+  .app > .sidebar .sidebar-footer {
+    justify-content: center;
+    padding: 16px 4px;
+    gap: 0;
+  }
+
+  .app > .sidebar .sidebar-footer span:not(.system-dot) {
+    display: none !important;
+  }
+
+  .app > .main-content {
+    width: calc(100% - 68px) !important;
+    margin-left: 68px !important;
+    padding: 20px 16px;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  .app > .sidebar {
+    width: 54px !important;
+    min-width: 54px !important;
+  }
+
+  .app > .sidebar .sidebar-nav {
+    padding: 0 4px;
+  }
+
+  .app > .main-content {
+    width: calc(100% - 54px) !important;
+    margin-left: 54px !important;
+    padding: 14px 9px;
+  }
+}

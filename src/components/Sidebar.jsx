@@ -110,6 +110,8 @@ function Sidebar() {
             <NavLink
               key={item.path}
               to={item.path}
+              title={item.name}
+              aria-label={item.name}
               className={({ isActive }) =>
                 `nav-item ${isActive ? "active" : ""}`
               }
