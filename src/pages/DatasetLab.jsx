@@ -49,7 +49,7 @@ export default function DatasetLab() {
             <FileSpreadsheet size={28} color="#22D3EE" />
             <div>
               <h2 style={{ margin: 0, fontSize: 20 }}>Network dataset upload</h2>
-              <p style={{ ...muted, margin: "5px 0 0" }}>CSV only · Maximum 1 GB · Up to 50,000 rows</p>
+              <p style={{ ...muted, margin: "5px 0 0" }}>CSV only · Maximum 10 GB · Up to 50,000 rows</p>
             </div>
           </div>
           <label htmlFor="dataset-file" style={{
@@ -66,13 +66,13 @@ export default function DatasetLab() {
               onChange={e => {
                 const chosen = e.target.files?.[0] || null;
                 setFile(chosen); setData(null); setError("");
-                if (chosen && chosen.size > 10 * 1048576) {
-                  setError("This file is larger than 1 GB.");
+                if (chosen && chosen.size > 10 * 1024 * 1024 * 1024) {
+                  setError("This file exceeds the 10 GB upload limit.");
                 }
               }} />
           </label>
           <button style={{ ...button, marginTop: 16 }} onClick={upload}
-            disabled={busy || !file || file.size > 10 * 1048576}>
+            disabled={busy || !file || file.size > 10 * 1024 * 1024 * 1024}>
             {busy ? <RefreshCw size={17} /> : <Upload size={17} />}
             {busy ? "Analyzing CSV..." : "Upload & Analyze"}
           </button>

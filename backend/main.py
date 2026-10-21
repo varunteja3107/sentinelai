@@ -991,9 +991,9 @@ async def preview_dataset(file: UploadFile = File(...)):
     if not filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a CSV file.")
 
-    content = await file.read(1024 * 1024 * 1024 + 1)
-    if len(content) > 1024 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Maximum upload size is 10 MB.")
+    content = await file.read(10 * 1024 * 1024 * 1024 + 1)
+    if len(content) > 10 * 1024 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Maximum upload size is 10 GB.")
     if not content:
         raise HTTPException(status_code=400, detail="The file is empty.")
 
