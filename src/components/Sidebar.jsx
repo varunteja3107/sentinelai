@@ -6,6 +6,7 @@ import {
   Shield,
   FileText,
   BarChart3,
+  FileSpreadsheet,
   AlertTriangle,
   Settings,
   Bot,
@@ -58,6 +59,11 @@ const navigation = [
     name: "AI Assistant",
     path: "/assistant",
     icon: Bot,
+  },
+  {
+    name: "Dataset Lab",
+    path: "/dataset-lab",
+    icon: FileSpreadsheet,
   },
   {
     name: "Settings",
