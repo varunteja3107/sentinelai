@@ -4296,3 +4296,88 @@ textarea {
     padding: 14px 9px;
   }
 }
+
+/* Final fix: keep SentinelAI navigation visible and responsive */
+.app > aside.sidebar {
+  display: flex !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  bottom: 0 !important;
+  width: 274px !important;
+  min-width: 274px !important;
+  transform: none !important;
+  z-index: 10000 !important;
+  flex-direction: column !important;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.app > main.main-content {
+  width: calc(100% - 274px) !important;
+  margin-left: 274px !important;
+  min-width: 0 !important;
+  box-sizing: border-box;
+}
+
+@media (max-width: 900px) {
+  .app > aside.sidebar {
+    width: 68px !important;
+    min-width: 68px !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+  }
+
+  .app > aside.sidebar .sidebar-brand {
+    justify-content: center;
+    padding: 16px 4px;
+  }
+
+  .app > aside.sidebar .sidebar-brand > div:not(.brand-icon) {
+    display: none !important;
+  }
+
+  .app > aside.sidebar .sidebar-nav {
+    padding: 0 5px;
+  }
+
+  .app > aside.sidebar .nav-item {
+    justify-content: center;
+    gap: 0;
+    padding: 13px 0;
+  }
+
+  .app > aside.sidebar .nav-item span {
+    display: none !important;
+  }
+
+  .app > aside.sidebar .sidebar-footer {
+    justify-content: center;
+    padding: 16px 4px;
+  }
+
+  .app > aside.sidebar .sidebar-footer span:not(.system-dot) {
+    display: none !important;
+  }
+
+  .app > main.main-content {
+    width: calc(100% - 68px) !important;
+    margin-left: 68px !important;
+    padding: 20px 16px;
+  }
+}
+
+@media (max-width: 480px) {
+  .app > aside.sidebar {
+    width: 54px !important;
+    min-width: 54px !important;
+  }
+
+  .app > main.main-content {
+    width: calc(100% - 54px) !important;
+    margin-left: 54px !important;
+    padding: 14px 9px;
+  }
+}
