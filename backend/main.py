@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from io import BytesIO
 
 from sqlalchemy.orm import Session
 
@@ -978,3 +979,70 @@ def zero_trust_status():
             "BLOCK"
         ]
     }
+
+
+# DATASET_LAB_UPLOAD_ROUTE
+@app.post("/api/datasets/preview")
+async def preview_dataset(file: UploadFile = File(...)):
+    """Validate a CSV and return a preview and label statistics."""
+    import pandas as pd
+
+    filename = file.filename or "dataset.csv"
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Please upload a CSV file.")
+
+    content = await file.read(100 * 1024 * 1024 + 1)
+    if len(content) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Maximum upload size is 10 MB.")
+    if not content:
+        raise HTTPException(status_code=400, detail="The file is empty.")
+
+    try:
+        frame = pd.read_csv(BytesIO(content), on_bad_lines="error")
+        if frame.empty or len(frame.columns) == 0:
+            raise HTTPException(status_code=400, detail="No tabular data found.")
+        if len(frame) > 50000:
+            raise HTTPException(
+                status_code=400,
+                detail="Maximum supported dataset size is 50,000 rows."
+            )
+
+        frame.columns = [str(c).strip() for c in frame.columns]
+        label_col = next(
+            (c for c in frame.columns if c.lower() in {
+                "label", "class", "attack", "attack_type", "attack type",
+                "category", "target"
+            }),
+            None
+        )
+        distribution = {}
+        if label_col:
+            distribution = {
+                str(k): int(v)
+                for k, v in frame[label_col].fillna("Unknown")
+                    .astype(str).value_counts().head(30).items()
+            }
+
+        preview_frame = frame.head(10).astype(object)
+        preview_frame = preview_frame.where(pd.notna(preview_frame), None)
+        return {
+            "filename": filename,
+            "rows": int(len(frame)),
+            "columns_count": int(len(frame.columns)),
+            "columns": list(frame.columns),
+            "numeric_columns": [
+                str(c) for c in frame.select_dtypes(include="number").columns
+            ],
+            "preview": preview_frame.to_dict(orient="records"),
+            "label_column": label_col,
+            "label_distribution": distribution,
+            "message": "CSV preview complete. Labels are supplied by the dataset, not verified live detections."
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Unable to parse CSV. Check the file format and column headers."
+        ) from exc
+
