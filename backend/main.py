@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
 
@@ -1118,3 +1118,92 @@ async def preview_dataset(file: UploadFile = File(...)):
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
         await file.close()
+
+
+# =========================================================
+# OPT-IN DEVICE MONITORING (health telemetry + location)
+# Configure DEVICE_MONITOR_TOKEN in Render before use.
+# Reports are held in memory and reset when the service restarts.
+# =========================================================
+import os as _device_monitor_os
+import hmac as _device_monitor_hmac
+from datetime import datetime as _device_monitor_datetime, timezone as _device_monitor_timezone
+
+_device_monitor_reports: dict[str, dict] = {}
+
+
+def _device_monitor_authorize(authorization: str | None) -> None:
+    expected = _device_monitor_os.getenv("DEVICE_MONITOR_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(
+            status_code=503,
+            detail="Device monitoring is not configured. Set DEVICE_MONITOR_TOKEN on the backend.",
+        )
+    supplied = authorization or ""
+    wanted = f"Bearer {expected}"
+    if not _device_monitor_hmac.compare_digest(supplied, wanted):
+        raise HTTPException(status_code=401, detail="Invalid device-monitor token.")
+
+
+@app.post("/api/device-monitor/report")
+def device_monitor_report(
+    payload: dict,
+    authorization: str | None = Header(default=None),
+):
+    _device_monitor_authorize(authorization)
+    device_id = str(payload.get("device_id", "")).strip()[:120]
+    device_name = str(payload.get("device_name", "")).strip()[:160]
+    if not device_id or not device_name:
+        raise HTTPException(status_code=400, detail="device_id and device_name are required.")
+
+    now = _device_monitor_datetime.now(_device_monitor_timezone.utc).isoformat()
+    report = dict(_device_monitor_reports.get(device_id, {}))
+    # Keep the location object supplied separately by the consented browser watch.
+    report.update(payload)
+    report["device_id"] = device_id
+    report["device_name"] = device_name
+    report["last_seen"] = now
+    _device_monitor_reports[device_id] = report
+    return {"ok": True, "device_id": device_id, "last_seen": now}
+
+
+@app.post("/api/device-monitor/location")
+def device_monitor_location(
+    payload: dict,
+    authorization: str | None = Header(default=None),
+):
+    _device_monitor_authorize(authorization)
+    device_id = str(payload.get("device_id", "")).strip()[:120]
+    report = _device_monitor_reports.get(device_id)
+    if not device_id or report is None:
+        raise HTTPException(status_code=404, detail="Start the laptop monitor agent first, then try location sharing again.")
+
+    try:
+        latitude = float(payload.get("latitude"))
+        longitude = float(payload.get("longitude"))
+        accuracy = float(payload.get("accuracy_m", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Valid latitude, longitude, and accuracy are required.")
+    if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
+        raise HTTPException(status_code=400, detail="Location coordinates are out of range.")
+
+    now = _device_monitor_datetime.now(_device_monitor_timezone.utc).isoformat()
+    report["location"] = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "accuracy_m": max(0, accuracy),
+        "updated_at": now,
+    }
+    return {"ok": True, "location_updated_at": now}
+
+
+@app.get("/api/device-monitor/latest")
+def device_monitor_latest(authorization: str | None = Header(default=None)):
+    _device_monitor_authorize(authorization)
+    if not _device_monitor_reports:
+        return {"device": None, "message": "No laptop agent has reported yet."}
+    latest = max(
+        _device_monitor_reports.values(),
+        key=lambda item: item.get("last_seen", ""),
+    )
+    return {"device": latest}

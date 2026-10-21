@@ -7,3 +7,8 @@ __pycache__/
 backend/sentinelai.db
 .env
 .DS_Store
+.vercel
+.env*
+device-agent/.venv/
+device-agent/__pycache__/
+device-agent/*.pyc

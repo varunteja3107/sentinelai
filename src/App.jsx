@@ -11,6 +11,7 @@ import Incidents from "./pages/Incidents";
 import Assistant from "./pages/Assistant";
 import Settings from "./pages/Settings";
 import DatasetLab from "./pages/DatasetLab";
+import DeviceMonitor from "./pages/DeviceMonitor";
 
 function App() {
   return (
@@ -38,6 +39,7 @@ function App() {
         <Route path="/settings" element={<Settings />} />
 
         <Route path="/dataset-lab" element={<DatasetLab />} />
+        <Route path="/device-monitor" element={<DeviceMonitor />} />
       </Routes>
     </BrowserRouter>
   );

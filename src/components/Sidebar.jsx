@@ -7,6 +7,7 @@ import {
   FileText,
   BarChart3,
   FileSpreadsheet,
+  Laptop,
   AlertTriangle,
   Settings,
   Bot,
@@ -64,6 +65,11 @@ const navigation = [
     name: "Dataset Lab",
     path: "/dataset-lab",
     icon: FileSpreadsheet,
+  },
+  {
+    name: "Device Monitor",
+    path: "/device-monitor",
+    icon: Laptop,
   },
   {
     name: "Settings",
