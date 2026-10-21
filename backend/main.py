@@ -984,65 +984,131 @@ def zero_trust_status():
 # DATASET_LAB_UPLOAD_ROUTE
 @app.post("/api/datasets/preview")
 async def preview_dataset(file: UploadFile = File(...)):
-    """Validate a CSV and return a preview and label statistics."""
+    """Accept CSV files up to 10 GiB and inspect them in chunks."""
+    import os
+    import tempfile
+    from collections import Counter
+
     import pandas as pd
 
+    MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
+    COPY_CHUNK_BYTES = 8 * 1024 * 1024
+    PARSE_CHUNK_ROWS = 100_000
+
     filename = file.filename or "dataset.csv"
+
     if not filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="Please upload a CSV file.")
 
-    content = await file.read(10 * 1024 * 1024 * 1024 + 1)
-    if len(content) > 10 * 1024 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="Maximum upload size is 10 GB.")
-    if not content:
-        raise HTTPException(status_code=400, detail="The file is empty.")
+    temp_path = None
+    total_bytes = 0
 
     try:
-        frame = pd.read_csv(BytesIO(content), on_bad_lines="error")
-        if frame.empty or len(frame.columns) == 0:
-            raise HTTPException(status_code=400, detail="No tabular data found.")
-        if len(frame) > 50000:
+        # Copy the upload to disk in bounded chunks instead of reading
+        # the complete file into Python memory.
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".csv", prefix="sentinelai_", delete=False
+        ) as temp:
+            temp_path = temp.name
+
+            while True:
+                part = await file.read(COPY_CHUNK_BYTES)
+                if not part:
+                    break
+
+                total_bytes += len(part)
+                if total_bytes > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Maximum upload size is 10 GiB (10 GB).",
+                    )
+
+                temp.write(part)
+
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="The file is empty.")
+
+        row_count = 0
+        columns = None
+        numeric_columns = []
+        label_column = None
+        preview = []
+        label_counts = Counter()
+
+        recognized_labels = {
+            "label", "class", "attack", "attack_type", "attack type",
+            "category", "target",
+        }
+
+        try:
+            for frame in pd.read_csv(
+                temp_path,
+                chunksize=PARSE_CHUNK_ROWS,
+                on_bad_lines="error",
+            ):
+                frame.columns = [str(c).strip() for c in frame.columns]
+
+                if columns is None:
+                    columns = list(frame.columns)
+                    numeric_columns = [
+                        str(c)
+                        for c in frame.select_dtypes(include="number").columns
+                    ]
+                    label_column = next(
+                        (c for c in columns if c.lower() in recognized_labels),
+                        None,
+                    )
+
+                row_count += len(frame)
+
+                # Retain only the first 10 rows for the displayed preview.
+                if len(preview) < 10:
+                    sample = frame.head(10 - len(preview)).astype(object)
+                    sample = sample.where(pd.notna(sample), None)
+                    preview.extend(sample.to_dict(orient="records"))
+
+                if label_column:
+                    counts = (
+                        frame[label_column]
+                        .fillna("Unknown")
+                        .astype(str)
+                        .value_counts()
+                        .to_dict()
+                    )
+                    label_counts.update(counts)
+
+        except (
+            pd.errors.EmptyDataError,
+            pd.errors.ParserError,
+            UnicodeDecodeError,
+        ) as exc:
             raise HTTPException(
                 status_code=400,
-                detail="Maximum supported dataset size is 50,000 rows."
+                detail=f"Could not read the CSV: {exc}",
+            ) from exc
+
+        if columns is None:
+            raise HTTPException(
+                status_code=400,
+                detail="No tabular data rows found in the CSV.",
             )
 
-        frame.columns = [str(c).strip() for c in frame.columns]
-        label_col = next(
-            (c for c in frame.columns if c.lower() in {
-                "label", "class", "attack", "attack_type", "attack type",
-                "category", "target"
-            }),
-            None
-        )
-        distribution = {}
-        if label_col:
-            distribution = {
-                str(k): int(v)
-                for k, v in frame[label_col].fillna("Unknown")
-                    .astype(str).value_counts().head(30).items()
-            }
-
-        preview_frame = frame.head(10).astype(object)
-        preview_frame = preview_frame.where(pd.notna(preview_frame), None)
         return {
             "filename": filename,
-            "rows": int(len(frame)),
-            "columns_count": int(len(frame.columns)),
-            "columns": list(frame.columns),
-            "numeric_columns": [
-                str(c) for c in frame.select_dtypes(include="number").columns
-            ],
-            "preview": preview_frame.to_dict(orient="records"),
-            "label_column": label_col,
-            "label_distribution": distribution,
-            "message": "CSV preview complete. Labels are supplied by the dataset, not verified live detections."
+            "rows": row_count,
+            "columns_count": len(columns),
+            "columns": columns,
+            "numeric_columns": numeric_columns,
+            "preview": preview,
+            "label_column": label_column,
+            "label_distribution": dict(label_counts.most_common(30)),
+            "message": (
+                "CSV preview complete. Labels come from the dataset and "
+                "are not verified live threat detections."
+            ),
         }
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="Unable to parse CSV. Check the file format and column headers."
-        ) from exc
 
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+        await file.close()

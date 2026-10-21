@@ -49,7 +49,7 @@ export default function DatasetLab() {
             <FileSpreadsheet size={28} color="#22D3EE" />
             <div>
               <h2 style={{ margin: 0, fontSize: 20 }}>Network dataset upload</h2>
-              <p style={{ ...muted, margin: "5px 0 0" }}>CSV only · Maximum 10 GB · Up to 50,000 rows</p>
+              <p style={{ ...muted, margin: "5px 0 0" }}>CSV only · Maximum 10 GB · Chunked processing</p>
             </div>
           </div>
           <label htmlFor="dataset-file" style={{
