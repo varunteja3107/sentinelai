@@ -692,6 +692,8 @@ def analytics(db: Session = Depends(get_db)):
 @app.post("/api/assistant")
 def security_assistant(question: str, db: Session = Depends(get_db)):
 
+    q = question.lower()
+
     latest = (
         db.query(Threat)
         .order_by(Threat.created_at.desc())
@@ -699,12 +701,45 @@ def security_assistant(question: str, db: Session = Depends(get_db)):
     )
 
     if latest is None:
+        if "risk" in q or "score" in q:
+            return {
+                "answer": (
+                    "The current overall SentinelAI security score is "
+                    "100/100 (SECURE). No threats have been recorded, "
+                    "so there is no individual threat risk score yet."
+                ),
+                "threat": None
+            }
+
+        if "firewall" in q:
+            return {
+                "answer": (
+                    "The firewall is ACTIVE in AI ADAPTIVE mode. "
+                    "Dynamic response and Zero Trust are enabled. "
+                    "Simulation mode is active, so actions are simulated "
+                    "rather than enforced on real network traffic."
+                ),
+                "threat": None
+            }
+
+        if "zero trust" in q or "zero-trust" in q:
+            return {
+                "answer": (
+                    "Zero Trust is enabled, including continuous "
+                    "verification, least privilege, identity verification, "
+                    "device trust, and risk-based access."
+                ),
+                "threat": None
+            }
+
         return {
-            "answer": "No security events are available yet.",
+            "answer": (
+                "No security events are available yet. The current "
+                "overall security score is 100/100 (SECURE). You can ask "
+                "about the risk score, firewall status, or Zero Trust."
+            ),
             "threat": None
         }
-
-    q = question.lower()
 
     if "why" in q and ("blocked" in q or "block" in q):
 
