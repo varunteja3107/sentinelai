@@ -1,3 +1,4 @@
+import { API_BASE as API } from "../api";
 import PageLayout from "../components/PageLayout";
 import { useEffect, useState } from "react";
 import {
@@ -10,8 +11,6 @@ import {
   X,
   Eye
 } from "lucide-react";
-
-const API = "https://sentinelai-wnno.onrender.com";
 
 export default function ThreatDetection() {
   const [threats, setThreats] = useState([]);

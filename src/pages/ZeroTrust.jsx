@@ -1,3 +1,4 @@
+import { API_BASE as API } from "../api";
 import { useState } from "react";
 import PageLayout from "../components/PageLayout";
 import {
@@ -12,8 +13,6 @@ import {
   XCircle,
   RefreshCw
 } from "lucide-react";
-
-const API = "https://sentinelai-wnno.onrender.com";
 
 export default function ZeroTrust() {
   const [form, setForm] = useState({

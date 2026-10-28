@@ -1,3 +1,4 @@
+import { API_BASE as API } from "../api";
 import { useEffect, useState } from "react";
 import {
   FileText,
@@ -8,8 +9,6 @@ import {
 } from "lucide-react";
 
 import PageLayout from "../components/PageLayout";
-
-const API = "https://sentinelai-wnno.onrender.com";
 
 function SecurityLogs() {
   const [incidents, setIncidents] = useState([]);

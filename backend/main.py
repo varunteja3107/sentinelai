@@ -1,7 +1,16 @@
+import os
+import ipaddress
+import time
+from collections import defaultdict, deque
+from threading import RLock
+from datetime import datetime, timezone
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Header
+from pydantic import BaseModel, Field
+from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from io import BytesIO
 
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from database import Base, engine, get_db
@@ -14,26 +23,38 @@ from risk_engine import calculate_risk
 
 Base.metadata.create_all(bind=engine)
 
+# Add the notes column when upgrading an older existing database.
+# SQLAlchemy inspection works with SQLite and PostgreSQL.
+incident_columns = {
+    column["name"] for column in inspect(engine).get_columns("incidents")
+}
+if "notes" not in incident_columns:
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE incidents ADD COLUMN notes VARCHAR DEFAULT ''"
+        )
 
 app = FastAPI(
-
-
-
     title="SentinelAI API",
-    version="1.0.0"
+    version="1.0.0",
 )
+
+frontend_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "FRONTEND_URL",
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=frontend_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-
-
 
 
 ai = ThreatDetectionAI()
@@ -231,16 +252,98 @@ def analyze_threat(
     return threat
 
 
-@app.get("/api/incidents")
-def get_incidents(
-    db: Session = Depends(get_db)
-):
+class IncidentUpdate(BaseModel):
+    status: Optional[str] = None
+    notes: Optional[str] = Field(default=None, max_length=5000)
 
-    return db.query(
-        Incident
-    ).order_by(
+
+def incident_response(incident, db):
+    threat = None
+    if incident.threat_id is not None:
+        threat = db.query(Threat).filter(
+            Threat.id == incident.threat_id
+        ).first()
+
+    return {
+        "id": incident.id,
+        "title": incident.title,
+        "severity": incident.severity,
+        "risk_score": incident.risk_score,
+        "status": incident.status,
+        "notes": incident.notes or "",
+        "threat_id": incident.threat_id,
+        "created_at": incident.created_at,
+        "threat_type": threat.threat_type if threat else None,
+        "source_ip": threat.source_ip if threat else None,
+        "destination_ip": threat.destination_ip if threat else None,
+        "description": (
+            f"{threat.threat_type} traffic to port {threat.port} over {threat.protocol}"
+            if threat else None
+        ),
+    }
+
+
+@app.get("/api/incidents")
+def get_incidents(db: Session = Depends(get_db)):
+    incidents = db.query(Incident).order_by(
         Incident.created_at.desc()
     ).all()
+    return [incident_response(item, db) for item in incidents]
+
+
+@app.patch("/api/incidents/{incident_id}")
+def update_incident(
+    incident_id: int,
+    payload: IncidentUpdate,
+    db: Session = Depends(get_db)
+):
+    incident = db.query(Incident).filter(
+        Incident.id == incident_id
+    ).first()
+
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    changes = payload.dict(exclude_unset=True)
+    if not changes:
+        raise HTTPException(status_code=400, detail="No update fields supplied")
+
+    if "status" in changes:
+        if changes["status"] is None:
+            raise HTTPException(status_code=400, detail="Status cannot be null")
+        status = changes["status"].strip().upper()
+        allowed = {"OPEN", "INVESTIGATING", "RESOLVED", "FALSE_POSITIVE"}
+        if status not in allowed:
+            raise HTTPException(status_code=400, detail="Unsupported incident status")
+        incident.status = status
+
+    if "notes" in changes:
+        if changes["notes"] is None:
+            raise HTTPException(status_code=400, detail="Notes cannot be null")
+        incident.notes = changes["notes"].strip()
+
+    db.commit()
+    db.refresh(incident)
+
+    threat = None
+    if incident.threat_id is not None:
+        threat = db.query(Threat).filter(
+            Threat.id == incident.threat_id
+        ).first()
+
+    create_audit_log(
+        db=db,
+        event_type="INCIDENT_UPDATED",
+        message=(
+            f"Incident #{incident.id} updated; status={incident.status}; "
+            f"notes_updated={'yes' if 'notes' in changes else 'no'}"
+        ),
+        severity=incident.severity or "INFO",
+        source_ip=threat.source_ip if threat else "",
+        action="UPDATE"
+    )
+
+    return incident_response(incident, db)
 
 
 @app.get("/api/devices")
@@ -461,7 +564,8 @@ firewall_rules = [
         "port": "3389",
         "protocol": "TCP",
         "action": "BLOCK",
-        "status": "ACTIVE"
+        "status": "ACTIVE",
+        "priority": 100,
     },
     {
         "id": 2,
@@ -471,7 +575,8 @@ firewall_rules = [
         "port": "443",
         "protocol": "TCP",
         "action": "ALLOW",
-        "status": "ACTIVE"
+        "status": "ACTIVE",
+        "priority": 50,
     },
     {
         "id": 3,
@@ -481,7 +586,8 @@ firewall_rules = [
         "port": "23",
         "protocol": "TCP",
         "action": "BLOCK",
-        "status": "ACTIVE"
+        "status": "ACTIVE",
+        "priority": 100,
     },
     {
         "id": 4,
@@ -491,69 +597,321 @@ firewall_rules = [
         "port": "53",
         "protocol": "UDP",
         "action": "ALLOW",
-        "status": "ACTIVE"
-    }
+        "status": "ACTIVE",
+        "priority": 50,
+    },
 ]
 
 
 @app.get("/api/firewall/rules")
 def get_firewall_rules():
-
-    return firewall_rules
+    return sorted(
+        firewall_rules,
+        key=lambda rule: (-rule.get("priority", 0), rule["id"]),
+    )
 
 
 @app.post("/api/firewall/rules/{rule_id}/toggle")
 def toggle_firewall_rule(rule_id: int):
-
     for rule in firewall_rules:
-
         if rule["id"] == rule_id:
-
-            if rule["status"] == "ACTIVE":
-                rule["status"] = "DISABLED"
-
-            else:
-                rule["status"] = "ACTIVE"
-
+            rule["status"] = (
+                "DISABLED" if rule["status"] == "ACTIVE" else "ACTIVE"
+            )
             return rule
 
+    raise HTTPException(status_code=404, detail="Firewall rule not found")
+
+
+def source_matches(rule_source: str, source_ip: str | None) -> bool:
+    """Match Any, an IP address, or a CIDR network.
+
+    Existing descriptive scopes such as 'Internal Network' are retained
+    for compatibility. Configure them as real CIDRs before relying on them
+    for production source-network restrictions.
+    """
+    if rule_source.strip().lower() == "any":
+        return True
+
+    try:
+        network = ipaddress.ip_network(rule_source, strict=False)
+    except ValueError:
+        # Legacy descriptive labels are not actual IP access controls.
+        return True
+
+    if not source_ip:
+        return False
+
+    return ipaddress.ip_address(source_ip) in network
+
+
+
+# TEMPORARY IP BLOCKING AND RATE LIMITING
+# Simulation only. This does not modify the operating system firewall.
+
+
+_protection_lock = RLock()
+_temporary_blocks = {}
+_rate_events = defaultdict(deque)
+
+PROTECTION_CONFIG = {
+    "rate_limit_requests": 20,
+    "rate_limit_window_seconds": 60,
+    "temporary_block_seconds": 300,
+}
+
+
+def _valid_source_ip(value):
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except (ValueError, AttributeError):
+        raise HTTPException(
+            status_code=422,
+            detail="source_ip must be a valid IPv4 or IPv6 address",
+        )
+
+
+def _expire_old_blocks(now=None):
+    now = time.time() if now is None else now
+    expired = [
+        ip for ip, item in _temporary_blocks.items()
+        if item["expires_at_epoch"] <= now
+    ]
+    for ip in expired:
+        del _temporary_blocks[ip]
+    return expired
+
+
+def _block_response(source_ip, item):
     return {
-        "error": "Firewall rule not found"
+        "source_ip": source_ip,
+        "reason": item["reason"],
+        "created_at": item["created_at"],
+        "expires_at": item["expires_at"],
+        "remaining_seconds": max(
+            0, int(item["expires_at_epoch"] - time.time())
+        ),
+        "simulation_mode": True,
+    }
+
+
+@app.get("/api/firewall/protection/config")
+def get_firewall_protection_config():
+    return {
+        **PROTECTION_CONFIG,
+        "temporary_blocking_enabled": True,
+        "rate_limiting_enabled": True,
+        "simulation_mode": True,
+    }
+
+
+@app.get("/api/firewall/blocks")
+def get_temporary_blocks():
+    with _protection_lock:
+        _expire_old_blocks()
+        return {
+            "blocks": [
+                _block_response(ip, item)
+                for ip, item in sorted(_temporary_blocks.items())
+            ],
+            "count": len(_temporary_blocks),
+            "simulation_mode": True,
+        }
+
+
+@app.post("/api/firewall/blocks")
+def create_temporary_block(
+    source_ip: str,
+    duration_seconds: int = 300,
+    reason: str = "Manual temporary block",
+    db: Session = Depends(get_db),
+):
+    source_ip = _valid_source_ip(source_ip)
+    if not 1 <= duration_seconds <= 86400:
+        raise HTTPException(
+            status_code=422,
+            detail="duration_seconds must be between 1 and 86400",
+        )
+
+    now = time.time()
+    expires = now + duration_seconds
+    item = {
+        "reason": reason[:200],
+        "created_at": datetime.fromtimestamp(
+            now, timezone.utc
+        ).isoformat(),
+        "expires_at": datetime.fromtimestamp(
+            expires, timezone.utc
+        ).isoformat(),
+        "expires_at_epoch": expires,
+    }
+
+    with _protection_lock:
+        _temporary_blocks[source_ip] = item
+        _rate_events.pop(source_ip, None)
+
+    create_audit_log(
+        db,
+        event_type="TEMPORARY_IP_BLOCK",
+        message=f"Temporary block created for {source_ip}; "
+                f"duration={duration_seconds}s; reason={item['reason']}",
+        severity="WARNING",
+        source_ip=source_ip,
+        action="BLOCK",
+    )
+
+    return {
+        "status": "blocked",
+        **_block_response(source_ip, item),
+    }
+
+
+@app.post("/api/firewall/blocks/release")
+def release_temporary_block(
+    source_ip: str,
+    db: Session = Depends(get_db),
+):
+    source_ip = _valid_source_ip(source_ip)
+    with _protection_lock:
+        existed = _temporary_blocks.pop(source_ip, None) is not None
+
+    if not existed:
+        raise HTTPException(
+            status_code=404,
+            detail="No active temporary block found for this IP",
+        )
+
+    create_audit_log(
+        db,
+        event_type="TEMPORARY_IP_UNBLOCK",
+        message=f"Temporary block manually released for {source_ip}",
+        severity="INFO",
+        source_ip=source_ip,
+        action="RELEASE",
+    )
+    return {
+        "status": "released",
+        "source_ip": source_ip,
+        "simulation_mode": True,
     }
 
 
 @app.post("/api/firewall/evaluate")
 def evaluate_firewall(
     port: int,
-    protocol: str = "TCP"
+    protocol: str = "TCP",
+    source_ip: str | None = None,
+    db: Session = Depends(get_db),
 ):
+    if not 1 <= port <= 65535:
+        raise HTTPException(
+            status_code=422,
+            detail="Port must be between 1 and 65535",
+        )
 
-    for rule in firewall_rules:
+    protocol = protocol.strip().upper()
+    if protocol not in {"TCP", "UDP"}:
+        raise HTTPException(
+            status_code=422,
+            detail="Protocol must be TCP or UDP",
+        )
 
-        if (
-            rule["status"] == "ACTIVE"
-            and rule["port"] == str(port)
-            and rule["protocol"] == protocol
-        ):
+    if source_ip:
+        source_ip = _valid_source_ip(source_ip)
 
-            return {
-                "matched": True,
-                "rule": rule["name"],
-                "action": rule["action"],
-                "port": port,
-                "protocol": protocol
-            }
+    now = time.time()
+    forced_block_reason = None
+    block_details = None
+
+    if source_ip:
+        with _protection_lock:
+            _expire_old_blocks(now)
+
+            existing_block = _temporary_blocks.get(source_ip)
+            if existing_block:
+                forced_block_reason = "Temporary IP Block"
+                block_details = existing_block
+            else:
+                events = _rate_events[source_ip]
+                cutoff = now - PROTECTION_CONFIG["rate_limit_window_seconds"]
+
+                while events and events[0] <= cutoff:
+                    events.popleft()
+
+                events.append(now)
+
+                if len(events) > PROTECTION_CONFIG["rate_limit_requests"]:
+                    duration = PROTECTION_CONFIG["temporary_block_seconds"]
+                    expires = now + duration
+                    block_details = {
+                        "reason": (
+                            f"Rate limit exceeded: more than "
+                            f"{PROTECTION_CONFIG['rate_limit_requests']} "
+                            f"evaluations in "
+                            f"{PROTECTION_CONFIG['rate_limit_window_seconds']}s"
+                        ),
+                        "created_at": datetime.fromtimestamp(
+                            now, timezone.utc
+                        ).isoformat(),
+                        "expires_at": datetime.fromtimestamp(
+                            expires, timezone.utc
+                        ).isoformat(),
+                        "expires_at_epoch": expires,
+                    }
+                    _temporary_blocks[source_ip] = block_details
+                    _rate_events.pop(source_ip, None)
+                    forced_block_reason = "Rate Limit Temporary Block"
+
+    if forced_block_reason:
+        action = "BLOCK"
+        rule_name = forced_block_reason
+        matched = True
+        priority = 1000
+    else:
+        matching_rules = sorted(
+            (
+                rule for rule in firewall_rules
+                if rule["status"] == "ACTIVE"
+                and rule["port"] == str(port)
+                and rule["protocol"] == protocol
+                and source_matches(rule.get("source", "Any"), source_ip)
+            ),
+            key=lambda rule: (-rule.get("priority", 0), rule["id"]),
+        )
+
+        matched = bool(matching_rules)
+        rule = matching_rules[0] if matched else None
+        action = rule["action"] if rule else "BLOCK"
+        rule_name = rule["name"] if rule else "Default Deny Policy"
+        priority = rule.get("priority", 0) if rule else 0
+
+    create_audit_log(
+        db,
+        event_type="FIREWALL_DECISION",
+        message=(
+            f"Rule={rule_name}; port={port}; protocol={protocol}; "
+            f"matched={matched}; action={action}; priority={priority}"
+            + (f"; reason={block_details['reason']}" if block_details else "")
+        ),
+        severity="WARNING" if action == "BLOCK" else "INFO",
+        source_ip=source_ip or "",
+        action=action,
+    )
 
     return {
-        "matched": False,
-        "rule": "Default Policy",
-        "action": "ALLOW",
+        "matched": matched,
+        "rule": rule_name,
+        "action": action,
         "port": port,
-        "protocol": protocol
+        "protocol": protocol,
+        "source_ip": source_ip,
+        "priority": priority,
+        "temporary_block": bool(forced_block_reason),
+        "block_reason": block_details["reason"] if forced_block_reason else None,
+        "simulation_mode": True,
     }
 
 
-# =========================================================
 # SECURITY AUDIT LOGS
 # =========================================================
 
@@ -1207,3 +1565,84 @@ def device_monitor_latest(authorization: str | None = Header(default=None)):
         key=lambda item: item.get("last_seen", ""),
     )
     return {"device": latest}
+
+
+# Local system telemetry. Run this backend on the Mac being monitored.
+@app.get("/api/live/system")
+def live_system_telemetry():
+    import psutil
+    import platform
+    from datetime import datetime, timezone
+
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0.2)
+        memory = psutil.virtual_memory()
+        disk = psutil.disk_usage("/")
+        network = psutil.net_io_counters()
+        connections = []
+
+        try:
+            for conn in psutil.net_connections(kind="inet")[:100]:
+                local = conn.laddr
+                remote = conn.raddr
+                connections.append({
+                    "status": conn.status,
+                    "local_ip": local.ip if local else None,
+                    "local_port": local.port if local else None,
+                    "remote_ip": remote.ip if remote else None,
+                    "remote_port": remote.port if remote else None,
+                    "pid": conn.pid,
+                })
+            connection_access = "available"
+        except (psutil.AccessDenied, OSError):
+            connection_access = "permission_limited"
+
+        interfaces = {}
+        for name, addresses in psutil.net_if_addrs().items():
+            interfaces[name] = [
+                {
+                    "address": item.address,
+                    "family": str(item.family),
+                }
+                for item in addresses
+                if item.family in (2, 10, 30)
+            ]
+
+        return {
+            "source": "local_machine",
+            "collected_at": datetime.now(timezone.utc).isoformat(),
+            "hostname": platform.node(),
+            "platform": platform.platform(),
+            "cpu_percent": cpu_percent,
+            "memory": {
+                "total_bytes": memory.total,
+                "used_bytes": memory.used,
+                "available_bytes": memory.available,
+                "percent": memory.percent,
+            },
+            "disk": {
+                "total_bytes": disk.total,
+                "used_bytes": disk.used,
+                "free_bytes": disk.free,
+                "percent": disk.percent,
+            },
+            "process_count": len(psutil.pids()),
+            "network_io": {
+                "bytes_sent": network.bytes_sent,
+                "bytes_received": network.bytes_recv,
+                "packets_sent": network.packets_sent,
+                "packets_received": network.packets_recv,
+            },
+            "network_interfaces": interfaces,
+            "connections": connections,
+            "connection_access": connection_access,
+            "note": (
+                "Live operating-system telemetry, not proof of an attack. "
+                "Connection visibility may be limited by macOS permissions."
+            ),
+        }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unable to collect system telemetry: {type(exc).__name__}",
+        )

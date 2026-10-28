@@ -1,3 +1,4 @@
+import { API_BASE as API } from "../api";
 import { useCallback, useEffect, useState } from "react";
 import {
   Activity,
@@ -9,10 +10,6 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import PageLayout from "../components/PageLayout";
-
-const API = (
-  import.meta.env.VITE_API_URL || "http://127.0.0.1:8000"
-).replace(/\/$/, "");
 
 function Dashboard() {
   const [data, setData] = useState(null);

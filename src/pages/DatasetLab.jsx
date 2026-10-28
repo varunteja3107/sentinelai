@@ -1,8 +1,8 @@
+import { API_BASE as API } from "../api";
 import { useState } from "react";
 import { Upload, FileSpreadsheet, AlertCircle, RefreshCw } from "lucide-react";
 import PageLayout from "../components/PageLayout";
 
-const API = (import.meta.env.VITE_API_URL || "https://sentinelai-wnno.onrender.com").replace(/\/+$/, "");
 const panel = {
   background: "#0F172A", border: "1px solid #263449",
   borderRadius: 14, padding: 20, minWidth: 0, color: "#E2E8F0"

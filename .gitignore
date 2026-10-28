@@ -12,3 +12,20 @@ backend/sentinelai.db
 device-agent/.venv/
 device-agent/__pycache__/
 device-agent/*.pyc
+
+# Local databases and database backups
+*.db
+*.sqlite
+*.sqlite3
+migration-backups/
+
+# Temporary source backups
+*.backup
+*.backup.*
+*.before_*
+*.before-*
+*.pre-cloud-*
+*.csv-backup-*
+backup_*/
+sentinelai_backup_*/
+src/pages/sidebar-fix-backup/

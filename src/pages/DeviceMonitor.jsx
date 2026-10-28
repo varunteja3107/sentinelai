@@ -1,8 +1,8 @@
+import { API_BASE as API } from "../api";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Activity, BatteryCharging, CheckCircle2, Cpu, HardDrive, Laptop, LockKeyhole, MapPin, RefreshCw, ShieldAlert, Wifi } from "lucide-react";
 import PageLayout from "../components/PageLayout";
 
-const API = (import.meta.env.VITE_API_URL || "https://sentinelai-wnno.onrender.com").replace(/\/+$/, "");
 const panel = { background: "#0F172A", border: "1px solid #263449", borderRadius: 14, padding: 20, minWidth: 0, color: "#E2E8F0" };
 const muted = { color: "#94A3B8", fontSize: 13 };
 const button = { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "10px 14px", borderRadius: 9, border: "1px solid #2C4962", background: "#132238", color: "#E2E8F0", fontWeight: 700, cursor: "pointer" };
@@ -24,6 +24,48 @@ export default function DeviceMonitor() {
   const [sharingLocation, setSharingLocation] = useState(false);
   const [statusMessage, setStatusMessage] = useState("Enter your device-monitor token to connect.");
   const watchId = useRef(null);
+
+  const [localSystem, setLocalSystem] = useState(null);
+  const [localSystemError, setLocalSystemError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+
+    async function loadLocalSystem() {
+      try {
+        const res = await fetch(`${API}/api/live/system`, { cache: "no-store" });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.detail || `HTTP ${res.status}`);
+
+        if (active) {
+          setLocalSystem(body);
+          setLocalSystemError("");
+        }
+      } catch (e) {
+        if (active) setLocalSystemError(e.message || "Telemetry unavailable");
+      }
+    }
+
+    loadLocalSystem();
+    const timer = setInterval(loadLocalSystem, 5000);
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  function formatBytes(bytes) {
+    if (bytes === null || bytes === undefined) return "--";
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value = Number(bytes);
+    let i = 0;
+    while (value >= 1024 && i < units.length - 1) {
+      value /= 1024;
+      i++;
+    }
+    return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+  }
+
 
   const refresh = useCallback(async (authToken = connectedToken) => {
     if (!authToken) return;
@@ -114,6 +156,48 @@ export default function DeviceMonitor() {
 
   return <PageLayout title="Live Laptop Monitor" subtitle="Monitor your Mac's health and optionally share its location">
     <div style={{ display: "grid", gap: 18, color: "#E2E8F0" }}>
+
+      <section style={panel}>
+        <h2 style={{ marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}>
+          <Activity color="#22D3EE" /> Live Mac system telemetry
+        </h2>
+        <p style={muted}>
+          Direct operating-system readings from the machine running the SentinelAI backend. Refreshes every 5 seconds.
+        </p>
+
+        {localSystemError && (
+          <p role="alert" style={{ color: "#FCA5A5" }}>{localSystemError}</p>
+        )}
+
+        {localSystem && (
+          <>
+            <p style={muted}>
+              Host: {localSystem.hostname || "Unavailable"} · {localSystem.platform || "Platform unavailable"}
+            </p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 12 }}>
+              <Metric icon={Cpu} label="CPU usage" value={localSystem.cpu_percent ?? null} suffix="%" />
+              <Metric icon={Activity} label="Memory used" value={localSystem.memory?.percent ?? null} suffix="%" />
+              <Metric icon={HardDrive} label="Disk used" value={localSystem.disk?.percent ?? null} suffix="%" />
+              <Metric icon={Laptop} label="Running processes" value={localSystem.process_count ?? null} />
+              <Metric icon={Wifi} label="Network sent" value={formatBytes(localSystem.network_io?.bytes_sent)} />
+              <Metric icon={Wifi} label="Network received" value={formatBytes(localSystem.network_io?.bytes_received)} />
+            </div>
+            <div style={{ marginTop: 14, fontSize: 13, lineHeight: 1.8 }}>
+              <div><strong>Collected:</strong> {localSystem.collected_at ? new Date(localSystem.collected_at).toLocaleString() : "Unavailable"}</div>
+              <div><strong>Visible network connections:</strong> {Array.isArray(localSystem.connections) ? localSystem.connections.length : "Unavailable"}</div>
+              <div><strong>Connection access:</strong> {localSystem.connection_access || "Not reported"}</div>
+              <p style={muted}>
+                System activity is not proof of an attack. macOS permissions may limit network connection visibility.
+              </p>
+            </div>
+          </>
+        )}
+
+        {!localSystem && !localSystemError && (
+          <p style={muted}>Waiting for the first telemetry response...</p>
+        )}
+      </section>
+
       <section style={{ ...panel, background: "linear-gradient(135deg,#0F172A,#102A3A)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
           <div style={{ padding: 12, borderRadius: 12, background: "#083344", color: "#22D3EE" }}><Laptop size={25} /></div>

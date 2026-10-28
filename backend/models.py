@@ -75,6 +75,7 @@ class Incident(Base):
     risk_score = Column(Float)
 
     status = Column(String, default="OPEN")
+    notes = Column(String, default="")
 
     threat_id = Column(Integer)
 

@@ -1,3 +1,4 @@
+import { API_BASE as API } from "../api";
 import PageLayout from "../components/PageLayout";
 import { useEffect, useState } from "react";
 import {
@@ -6,10 +7,9 @@ import {
   Clock,
   ShieldAlert,
   RefreshCw,
-  Search
+  Search,
+  X
 } from "lucide-react";
-
-const API = "https://sentinelai-wnno.onrender.com";
 
 export default function Incidents() {
   const [incidents, setIncidents] = useState([]);
@@ -17,6 +17,17 @@ export default function Incidents() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState("");
   const [error, setError] = useState("");
+  const [selectedIncident, setSelectedIncident] = useState(null);
+  const [editStatus, setEditStatus] = useState("OPEN");
+  const [editNotes, setEditNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState("");
+  const [incidentAuditLogs, setIncidentAuditLogs] = useState([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [showIncidentTimeline, setShowIncidentTimeline] = useState(false);
+  const [auditError, setAuditError] = useState("");
+
+
 
   const loadIncidents = async () => {
     try {
@@ -38,6 +49,86 @@ export default function Incidents() {
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  };
+
+
+
+  const loadIncidentAudit = async (incident) => {
+    setAuditLoading(true);
+    setAuditError("");
+    setIncidentAuditLogs([]);
+
+    try {
+      const response = await fetch(`${API}/api/logs`);
+      if (!response.ok) {
+        throw new Error(`Audit API returned HTTP ${response.status}`);
+      }
+
+      const logs = await response.json();
+      const sourceIp = incident.source_ip || "";
+      const incidentId = String(incident.id);
+
+      const related = (Array.isArray(logs) ? logs : []).filter((log) => {
+        const message = String(log.message || "");
+        const isIncidentUpdate =
+          String(log.event_type || "") === "INCIDENT_UPDATED" &&
+          message.includes(`Incident #${incidentId} `);
+
+        const isRelatedThreat =
+          sourceIp &&
+          log.source_ip === sourceIp &&
+          ["THREAT_DETECTED", "THREAT_BLOCKED"].includes(
+            String(log.event_type || "")
+          );
+
+        return isIncidentUpdate || isRelatedThreat;
+      });
+
+      setIncidentAuditLogs(related.slice(0, 30));
+    } catch (error) {
+      setAuditError(error.message || "Unable to load audit history.");
+    } finally {
+      setAuditLoading(false);
+    }
+  };
+
+  const openIncident = (incident) => {
+    setSelectedIncident(incident);
+    loadIncidentAudit(incident);
+    setEditStatus(incident.status || "OPEN");
+    setEditNotes(incident.notes || "");
+    setSaveMessage("");
+  };
+
+  const saveIncident = async () => {
+    if (!selectedIncident || saving) return;
+    try {
+      setSaving(true);
+      setSaveMessage("");
+      const response = await fetch(
+        `${API}/api/incidents/${selectedIncident.id}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status: editStatus, notes: editNotes })
+        }
+      );
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || "Unable to save changes.");
+      }
+      setSelectedIncident(result);
+      setIncidents(items => items.map(item =>
+        item.id === result.id ? result : item
+      ));
+      setEditStatus(result.status || "OPEN");
+      setEditNotes(result.notes || "");
+      setSaveMessage("Changes saved successfully.");
+    } catch (err) {
+      setSaveMessage(err.message || "Unable to save changes.");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -276,6 +367,7 @@ export default function Incidents() {
               <IncidentRow
                 key={incident.id}
                 incident={incident}
+                onClick={() => openIncident(incident)}
               />
             ))
           )}
@@ -309,12 +401,406 @@ export default function Incidents() {
             </b>
           </span>
         </div>
+
+      {selectedIncident && (
+        <div
+          onClick={() => setSelectedIncident(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 9999,
+            background: "rgba(2, 6, 23, 0.82)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "20px",
+            overflowY: "auto"
+          }}
+        >
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="incident-detail-title"
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: "680px",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              overscrollBehavior: "contain",
+              display: "flex",
+              flexDirection: "column",
+              background: "#0F172A",
+              border: "1px solid #263449",
+              borderRadius: "16px",
+              padding: "24px",
+              color: "#F8FAFC",
+              boxShadow: "0 24px 80px rgba(0,0,0,0.45)"
+            }}
+          >
+            <div style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "flex-start",
+              gap: "16px",
+              marginBottom: "22px"
+            }}>
+              <div>
+                <div style={{
+                  color: "#38BDF8",
+                  fontSize: "11px",
+                  fontWeight: 800,
+                  letterSpacing: "1.5px",
+                  marginBottom: "8px"
+                }}>
+                  SECURITY INCIDENT DETAILS
+                </div>
+                <h2 id="incident-detail-title" style={{
+                  fontSize: "22px",
+                  margin: 0,
+                  overflowWrap: "anywhere"
+                }}>
+                  {selectedIncident.title || "Security Incident"}
+                </h2>
+                <p style={{ color: "#94A3B8", marginBottom: 0 }}>
+                  Incident #{selectedIncident.id}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedIncident(null)}
+                aria-label="Close incident details"
+                style={{
+                  background: "#1E293B",
+                  color: "#F8FAFC",
+                  border: "1px solid #334155",
+                  borderRadius: "8px",
+                  padding: "8px",
+                  cursor: "pointer",
+                  display: "flex"
+                }}
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: "12px",
+              marginBottom: "20px"
+            }}>
+              {[
+                ["Severity", selectedIncident.severity],
+                ["Status", selectedIncident.status],
+                ["Risk Score", selectedIncident.risk_score],
+                ["Threat Type", selectedIncident.threat_type],
+                ["Source IP", selectedIncident.source_ip],
+                ["Destination IP", selectedIncident.destination_ip],
+                ["Created At", selectedIncident.created_at],
+                ["Description", selectedIncident.description]
+              ].map(([label, value]) => (
+                <div key={label} style={{
+                  background: "#111827",
+                  border: "1px solid #263449",
+                  borderRadius: "10px",
+                  padding: "14px",
+                  minWidth: 0
+                }}>
+                  <div style={{
+                    color: "#64748B",
+                    fontSize: "12px",
+                    fontWeight: 700,
+                    marginBottom: "8px"
+                  }}>
+                    {label}
+                  </div>
+                  <div style={{
+                    color: "#E2E8F0",
+                    fontSize: "14px",
+                    fontWeight: 600,
+                    overflowWrap: "anywhere"
+                  }}>
+                    {value === null || value === undefined || value === ""
+                      ? "Not available"
+                      : typeof value === "object"
+                        ? JSON.stringify(value)
+                        : String(value)}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+
+
+            <button
+              type="button"
+              onClick={() => setShowIncidentTimeline((shown) => !shown)}
+              style={{
+                marginBottom: "16px",
+                background: "#111827",
+                color: "#BAE6FD",
+                border: "1px solid #263449",
+                borderRadius: "8px",
+                padding: "9px 12px",
+                fontWeight: 700,
+                cursor: "pointer"
+              }}
+            >
+              {showIncidentTimeline ? "Hide Activity Timeline" : "Show Activity Timeline"}
+            </button>
+
+            {showIncidentTimeline && <div style={{
+              marginBottom: "14px",
+              padding: "14px",
+              height: "180px",
+              minHeight: "180px",
+              boxSizing: "border-box",
+              overflowY: "auto",
+              flexShrink: 0,
+              background: "#111827",
+              border: "1px solid #263449",
+              borderRadius: "12px"
+            }}>
+              <div style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                gap: "12px",
+                marginBottom: "14px"
+              }}>
+                <h3 style={{ margin: 0, fontSize: "16px", color: "#E2E8F0" }}>
+                  Incident Activity Timeline
+                </h3>
+                <button
+                  type="button"
+                  onClick={() => loadIncidentAudit(selectedIncident)}
+                  disabled={auditLoading}
+                  style={{
+                    background: "#1E293B",
+                    color: "#BAE6FD",
+                    border: "1px solid #334155",
+                    borderRadius: "8px",
+                    padding: "7px 10px",
+                    cursor: auditLoading ? "wait" : "pointer"
+                  }}
+                >
+                  {auditLoading ? "Refreshing..." : "Refresh"}
+                </button>
+              </div>
+
+              {auditLoading && (
+                <p style={{ color: "#94A3B8", fontSize: "13px" }}>
+                  Loading audit history...
+                </p>
+              )}
+
+              {auditError && (
+                <p role="alert" style={{ color: "#FCA5A5", fontSize: "13px" }}>
+                  {auditError}
+                </p>
+              )}
+
+              {!auditLoading && !auditError && incidentAuditLogs.length === 0 && (
+                <p style={{ color: "#94A3B8", fontSize: "13px" }}>
+                  No matching audit events found for this incident.
+                </p>
+              )}
+
+              <div style={{ display: "grid", gap: "12px" }}>
+                {incidentAuditLogs.map((log) => (
+                  <div
+                    key={log.id}
+                    style={{
+                      borderLeft: `3px solid ${
+                        log.action === "BLOCK" || log.severity === "HIGH"
+                          ? "#F87171"
+                          : log.event_type === "INCIDENT_UPDATED"
+                            ? "#38BDF8"
+                            : "#64748B"
+                      }`,
+                      padding: "4px 0 4px 12px"
+                    }}
+                  >
+                    <div style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      justifyContent: "space-between",
+                      gap: "8px",
+                      marginBottom: "5px"
+                    }}>
+                      <strong style={{ color: "#E2E8F0", fontSize: "13px" }}>
+                        {String(log.event_type || "SECURITY EVENT").replaceAll("_", " ")}
+                      </strong>
+                      <span style={{ color: "#94A3B8", fontSize: "11px" }}>
+                        {log.created_at
+                          ? new Date(log.created_at).toLocaleString()
+                          : "Time unavailable"}
+                      </span>
+                    </div>
+                    <p style={{
+                      color: "#CBD5E1",
+                      fontSize: "13px",
+                      lineHeight: 1.5,
+                      margin: "0 0 6px",
+                      overflowWrap: "anywhere"
+                    }}>
+                      {log.message || "No event details available."}
+                    </p>
+                    <span style={{
+                      color: "#94A3B8",
+                      fontSize: "11px"
+                    }}>
+                      Severity: {log.severity || "N/A"} · Action: {log.action || "N/A"}
+                      {log.source_ip ? ` · Source: ${log.source_ip}` : ""}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>}
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+              gap: "16px",
+              marginBottom: "22px"
+            }}>
+              <div>
+                <label htmlFor="incident-status" style={{
+                  display: "block",
+                  marginBottom: "8px",
+                  color: "#CBD5E1",
+                  fontWeight: 700
+                }}>
+                  Investigation Status
+                </label>
+                <select
+                  id="incident-status"
+                  value={editStatus}
+                  onChange={(e) => {
+                    setEditStatus(e.target.value);
+                    setSaveMessage("");
+                  }}
+                  style={{
+                    width: "100%",
+                    padding: "12px",
+                    borderRadius: "8px",
+                    background: "#111827",
+                    color: "#F8FAFC",
+                    border: "1px solid #334155"
+                  }}
+                >
+                  <option value="OPEN">Open</option>
+                  <option value="INVESTIGATING">Investigating</option>
+                  <option value="RESOLVED">Resolved</option>
+                  <option value="FALSE_POSITIVE">False Positive</option>
+                </select>
+              </div>
+
+              <div>
+                <label htmlFor="incident-notes" style={{
+                  display: "block",
+                  marginBottom: "8px",
+                  color: "#CBD5E1",
+                  fontWeight: 700
+                }}>
+                  Analyst Investigation Notes
+                </label>
+                <textarea
+                  id="incident-notes"
+                  value={editNotes}
+                  maxLength={5000}
+                  rows={5}
+                  placeholder="Record evidence, findings, and follow-up actions..."
+                  onChange={(e) => {
+                    setEditNotes(e.target.value);
+                    setSaveMessage("");
+                  }}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    padding: "12px",
+                    borderRadius: "8px",
+                    background: "#111827",
+                    color: "#F8FAFC",
+                    border: "1px solid #334155",
+                    font: "inherit",
+                    resize: "vertical"
+                  }}
+                />
+                <div style={{
+                  textAlign: "right",
+                  color: "#64748B",
+                  fontSize: "11px"
+                }}>
+                  {editNotes.length}/5000 characters
+                </div>
+              </div>
+            </div>
+
+            {saveMessage && (
+              <p role="status" style={{
+                color: saveMessage === "Changes saved successfully."
+                  ? "#4ADE80"
+                  : "#FCA5A5"
+              }}>
+                {saveMessage}
+              </p>
+            )}
+
+            <div style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              borderTop: "1px solid #263449",
+              paddingTop: "18px",
+              marginTop: "auto",
+              position: "sticky",
+              bottom: "0",
+              background: "#0F172A",
+              paddingBottom: "8px",
+              zIndex: 2
+            }}>
+              <button
+                type="button"
+                onClick={saveIncident}
+                disabled={saving}
+                style={{
+                  background: "#166534",
+                  border: "1px solid #15803D",
+                  color: "#F8FAFC",
+                  borderRadius: "8px",
+                  padding: "10px 18px",
+                  fontWeight: 700,
+                  cursor: saving ? "wait" : "pointer"
+                }}
+              >
+                {saving ? "Saving..." : "Save Changes"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedIncident(null)}
+                style={{
+                  background: "#164E63",
+                  border: "1px solid #0E7490",
+                  color: "#F8FAFC",
+                  borderRadius: "8px",
+                  padding: "10px 18px",
+                  fontWeight: 700,
+                  cursor: "pointer"
+                }}
+              >
+                Close Details
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       </div>
     </PageLayout>
   );
 }
 
-function IncidentRow({ incident }) {
+function IncidentRow({ incident, onClick }) {
   const isCritical = incident.severity === "CRITICAL";
   const isHigh = incident.severity === "HIGH";
 
@@ -326,7 +812,19 @@ function IncidentRow({ incident }) {
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`Open incident ${incident.id}: ${incident.title || "Security Incident"}`}
+      onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
+      title="Click to view incident details"
       style={{
+        cursor: "pointer",
         padding: "18px 22px",
         borderBottom: "1px solid #1E293B",
         display: "flex",

@@ -1,3 +1,4 @@
+import { API_BASE as API } from "../api";
 import { useEffect, useState } from "react";
 import {
   Bot,
@@ -10,7 +11,6 @@ import {
 } from "lucide-react";
 import PageLayout from "../components/PageLayout";
 import "./Assistant.css";
-const API = "https://sentinelai-wnno.onrender.com";
 const quickQuestions = [
   "Why was the latest threat blocked?",
   "What is the current risk score?",
