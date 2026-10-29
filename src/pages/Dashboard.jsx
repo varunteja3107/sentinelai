@@ -40,7 +40,7 @@ function Dashboard() {
       setError("");
     } catch (err) {
       setError(
-        "Cannot connect to the backend. Keep the FastAPI server running on port 8000."
+        `Dashboard request failed: ${err instanceof Error ? err.message : String(err)}`
       );
       console.error("Dashboard request failed:", err);
     } finally {
