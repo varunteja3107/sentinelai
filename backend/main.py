@@ -170,14 +170,11 @@ def analyze_threat(
     ] else 20
 
     risk_score, severity, action = calculate_risk(
-
         anomaly_score,
-
         device_risk,
-
         behavior_risk,
-
-        policy_risk
+        policy_risk,
+        attack_type=event.threat_type,
     )
 
     threat = Threat(
@@ -413,31 +410,63 @@ def seed_devices(
 
 @app.post("/api/demo/attack", response_model=ThreatResponse)
 def simulate_attack(
+    scenario: str = "port_scan",
     db: Session = Depends(get_db)
 ):
+    """Generate a simulated traffic event and analyze it using the existing AI engine."""
 
-    event = ThreatCreate(
+    scenarios = {
+        "port_scan": {
+            "threat_type": "Port Scan",
+            "source_ip": "192.168.1.250",
+            "destination_ip": "192.168.1.10",
+            "protocol": "TCP",
+            "port": 3389,
+            "packets": 950,
+            "bytes_transferred": 85000,
+        },
+        "ddos": {
+            "threat_type": "DDoS Simulation",
+            "source_ip": "192.168.1.251",
+            "destination_ip": "192.168.1.10",
+            "protocol": "TCP",
+            "port": 443,
+            "packets": 6000,
+            "bytes_transferred": 1000000,
+        },
+        "brute_force": {
+            "threat_type": "Brute Force",
+            "source_ip": "192.168.1.252",
+            "destination_ip": "192.168.1.10",
+            "protocol": "TCP",
+            "port": 22,
+            "packets": 400,
+            "bytes_transferred": 60000,
+        },
+        "benign": {
+            "threat_type": "Benign HTTPS Traffic",
+            "source_ip": "192.168.1.100",
+            "destination_ip": "192.168.1.10",
+            "protocol": "TCP",
+            "port": 443,
+            "packets": 30,
+            "bytes_transferred": 8000,
+        },
+    }
 
-        threat_type="Port Scan",
+    selected = scenario.strip().lower().replace("-", "_").replace(" ", "_")
+    if selected not in scenarios:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Unknown simulation scenario",
+                "available_scenarios": list(scenarios.keys()),
+            },
+        )
 
-        source_ip="192.168.1.250",
-
-        destination_ip="192.168.1.10",
-
-        protocol="TCP",
-
-        port=3389,
-
-        packets=950,
-
-        bytes_transferred=85000
-    )
-
-    threat = analyze_threat(
-        event,
-        db
-    )
-
+    event = ThreatCreate(**scenarios[selected])
+    threat = analyze_threat(event, db)
     return ThreatResponse.model_validate(threat)
 
 

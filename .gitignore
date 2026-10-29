@@ -29,3 +29,12 @@ migration-backups/
 backup_*/
 sentinelai_backup_*/
 src/pages/sidebar-fix-backup/
+
+# Local backups and test output
+*.backup
+*.backup-*
+*.pre-url-fix-*
+*.backup_before_*
+*-backup.txt
+backend/test-results.txt
+src/pages/ThreatDetection-working-before-layout.jsx

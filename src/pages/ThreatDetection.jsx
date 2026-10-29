@@ -19,6 +19,9 @@ export default function ThreatDetection() {
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [selectedThreat, setSelectedThreat] = useState(null);
+  const [simulating, setSimulating] = useState(false);
+  const [scenario, setScenario] = useState("port_scan");
+  const [simulationMessage, setSimulationMessage] = useState("");
 
   const loadThreats = async () => {
     try {
@@ -40,6 +43,38 @@ export default function ThreatDetection() {
     } finally {
       setLoading(false);
       setRefreshing(false);
+    }
+  };
+
+  const simulateAttack = async () => {
+    try {
+      setSimulating(true);
+      setSimulationMessage("");
+      setError("");
+
+      const response = await fetch(`${API}/api/demo/attack?scenario=${encodeURIComponent(scenario)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.detail || data.message || `Request failed (${response.status})`);
+      }
+
+      setSimulationMessage(
+        `${data.threat_type || scenario} simulated successfully. Risk: ${data.risk_score ?? "N/A"} | Severity: ${data.severity || "Unknown"} | Action: ${data.action || "Unknown"}`
+      );
+
+      await loadThreats();
+    } catch (err) {
+      console.error("Demo attack failed:", err);
+      setError(
+        `Demo attack failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      setSimulating(false);
     }
   };
 
@@ -196,6 +231,46 @@ export default function ThreatDetection() {
             </p>
           </div>
 
+          <select
+            value={scenario}
+            onChange={(event) => setScenario(event.target.value)}
+            disabled={simulating}
+            aria-label="Attack simulation scenario"
+            style={{
+              background: "#111827",
+              color: "#F8FAFC",
+              border: "1px solid #243244",
+              borderRadius: "10px",
+              padding: "11px 12px",
+              minWidth: "175px"
+            }}
+          >
+            <option value="port_scan">Port Scan</option>
+            <option value="ddos">DDoS Simulation</option>
+            <option value="brute_force">Brute Force</option>
+            <option value="benign">Benign Traffic</option>
+          </select>
+
+          <button
+            onClick={simulateAttack}
+            disabled={simulating}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "9px",
+              background: simulating ? "#334155" : "#7F1D1D",
+              border: "1px solid #B91C1C",
+              color: "#F8FAFC",
+              padding: "11px 17px",
+              borderRadius: "10px",
+              cursor: simulating ? "wait" : "pointer",
+              fontWeight: 700
+            }}
+          >
+            <ShieldAlert size={17} />
+            {simulating ? "Simulating..." : "Simulate Selected"}
+          </button>
+
           <button
             onClick={loadThreats}
             disabled={refreshing}
@@ -221,6 +296,22 @@ export default function ThreatDetection() {
             Refresh
           </button>
         </div>
+
+        {simulationMessage && (
+          <div
+            role="status"
+            style={{
+              marginBottom: "16px",
+              padding: "12px 16px",
+              borderRadius: "10px",
+              color: "#86EFAC",
+              background: "rgba(34,197,94,0.10)",
+              border: "1px solid rgba(34,197,94,0.25)"
+            }}
+          >
+            {simulationMessage}
+          </div>
+        )}
 
         {/* Live status */}
         <div
