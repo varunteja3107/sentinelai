@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Settings,
   Bot,
+  ClipboardCheck,
 } from "lucide-react";
 
 import { NavLink } from "react-router-dom";
@@ -70,6 +71,11 @@ const navigation = [
     name: "Device Monitor",
     path: "/device-monitor",
     icon: Laptop,
+  },
+  {
+    name: "Response Center",
+    path: "/response-center",
+    icon: ClipboardCheck,
   },
   {
     name: "Settings",

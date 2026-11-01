@@ -306,7 +306,156 @@ function Assistant() {
 
         </div>
       </div>
-    </PageLayout>
+
+        {/* SENTINELAI_INVESTIGATION_TOOLS */}
+        <section style={{
+          margin: "20px 0",
+          padding: 20,
+          borderRadius: 14,
+          background: "#111827",
+          border: "1px solid #263449",
+          color: "#E2E8F0"
+        }}>
+          <div style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 12
+          }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: 18 }}>
+                Investigation Workspace
+              </h2>
+              <p style={{ color: "#94A3B8", fontSize: 13 }}>
+                Run focused security investigations using the connected AI assistant.
+              </p>
+            </div>
+            <span style={{ color: "#67E8F9", fontSize: 13 }}>
+              {messages.length} conversation messages
+            </span>
+          </div>
+
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))",
+            gap: 10,
+            marginTop: 16
+          }}>
+            {[
+              {
+                title: "Threat investigation",
+                prompt: "Investigate the latest detected threats. Explain their severity, possible impact, and recommended response."
+              },
+              {
+                title: "Network risk analysis",
+                prompt: "Analyze the current network security risks and identify suspicious activity that needs investigation."
+              },
+              {
+                title: "Zero Trust review",
+                prompt: "Review the Zero Trust access decisions and explain how identity, device trust, and risk should influence access."
+              },
+              {
+                title: "Incident response plan",
+                prompt: "Prepare a prioritized incident response plan for the most important security threats."
+              },
+              {
+                title: "Firewall policy review",
+                prompt: "Review the firewall security posture and recommend improvements to reduce unnecessary network exposure."
+              },
+              {
+                title: "Security summary",
+                prompt: "Create a concise security operations summary covering recent threats, risks, and recommended actions."
+              }
+            ].map((item) => (
+              <button
+                key={item.title}
+                type="button"
+                disabled={loading}
+                onClick={() => askAssistant(item.prompt)}
+                style={{
+                  textAlign: "left",
+                  padding: 14,
+                  borderRadius: 9,
+                  border: "1px solid #334155",
+                  background: "#172438",
+                  color: "#E2E8F0",
+                  cursor: loading ? "not-allowed" : "pointer",
+                  opacity: loading ? 0.6 : 1
+                }}
+              >
+                <strong>{item.title}</strong>
+                <div style={{
+                  color: "#94A3B8",
+                  fontSize: 12,
+                  marginTop: 6
+                }}>
+                  Start investigation →
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <div style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 10,
+            marginTop: 18
+          }}>
+            <button
+              type="button"
+              disabled={messages.length === 0}
+              onClick={() => {
+                const report = messages.map((message, index) =>
+                  `${index + 1}. ${message.role.toUpperCase()}:\n${message.text}`
+                ).join("\n\n");
+
+                const blob = new Blob(
+                  [report],
+                  { type: "text/plain;charset=utf-8" }
+                );
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement("a");
+                link.href = url;
+                link.download = "sentinelai-investigation-report.txt";
+                link.click();
+                URL.revokeObjectURL(url);
+              }}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                border: 0,
+                background: "#06B6D4",
+                color: "#082F49",
+                fontWeight: 700,
+                cursor: "pointer"
+              }}
+            >
+              Export conversation
+            </button>
+
+            <button
+              type="button"
+              disabled={messages.length === 0 || loading}
+              onClick={() => {
+                if (window.confirm("Clear the current conversation?")) {
+                  setMessages([]);
+                }
+              }}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                border: "1px solid #7F1D1D",
+                background: "#291820",
+                color: "#FCA5A5",
+                cursor: "pointer"
+              }}
+            >
+              Clear conversation
+            </button>
+          </div>
+        </section>
+</PageLayout>
   );
 }
 

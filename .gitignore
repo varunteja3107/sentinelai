@@ -38,3 +38,6 @@ src/pages/sidebar-fix-backup/
 *-backup.txt
 backend/test-results.txt
 src/pages/ThreatDetection-working-before-layout.jsx
+
+.env
+backend/.env

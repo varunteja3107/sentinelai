@@ -12,6 +12,7 @@ import Assistant from "./pages/Assistant";
 import Settings from "./pages/Settings";
 import DatasetLab from "./pages/DatasetLab";
 import DeviceMonitor from "./pages/DeviceMonitor";
+import ResponseCenter from "./pages/ResponseCenter";
 
 function App() {
   return (
@@ -40,6 +41,7 @@ function App() {
 
         <Route path="/dataset-lab" element={<DatasetLab />} />
         <Route path="/device-monitor" element={<DeviceMonitor />} />
+        <Route path="/response-center" element={<ResponseCenter />} />
       </Routes>
     </BrowserRouter>
   );

@@ -1,9 +1,31 @@
-import os
 import ipaddress
 import time
+from network_topology import router as network_topology_router
+
+
+from dotenv import load_dotenv
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Security
+from schemas import LoginRequest, LoginResponse
+import os
+import hashlib
+from auth import verify_password, create_access_token, verify_access_token
+from schemas import ResponseActionReview
+from schemas import (
+    ThreatCreate,
+    ThreatResponse,
+    ZeroTrustRequest,
+    ZeroTrustResponse,
+    ResponsePlaybookRequest,
+    ResponseActionCreate,
+    ResponseActionReview,
+    ResponseActionRollback,
+    LoginRequest,
+    LoginResponse,
+)
 from collections import defaultdict, deque
 from threading import RLock
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Header
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -12,14 +34,72 @@ from io import BytesIO
 
 from sqlalchemy import inspect
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
-from database import Base, engine, get_db
-from models import Threat, Device, Incident
-from schemas import ThreatCreate, ThreatResponse, ZeroTrustRequest, ZeroTrustResponse
+from database import Base, engine, get_db, SessionLocal
+from models import Threat, Device, Incident, ResponseAction, RevokedToken, UserSession, SessionEvent, FirewallRule, AuditLog, BlockSpikeAlert, DeviceAgent, DeviceTelemetry
+from schemas import ThreatCreate, ThreatResponse, ZeroTrustRequest, ZeroTrustResponse, ResponsePlaybookRequest, ResponseActionCreate, ResponseActionReview, ResponseActionRollback
 
 from ai_engine import ThreatDetectionAI
 from risk_engine import calculate_risk
+from threat_explanations import explain_detection
+load_dotenv()
 
+security = HTTPBearer(auto_error=False)
+
+
+def get_current_admin(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+):
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        payload = verify_access_token(credentials.credentials)
+    except (ValueError, RuntimeError):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired access token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token_hash = hashlib.sha256(
+        credentials.credentials.encode("utf-8")
+    ).hexdigest()
+
+    db = SessionLocal()
+    try:
+        revoked = (
+            db.query(RevokedToken)
+            .filter(RevokedToken.token_hash == token_hash)
+            .first()
+        )
+    except SQLAlchemyError:
+        raise HTTPException(
+            status_code=503,
+            detail="Authentication service temporarily unavailable",
+        )
+    finally:
+        db.close()
+
+    if revoked is not None:
+        raise HTTPException(
+            status_code=401,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    if payload.get("role") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Administrator access required",
+        )
+
+    return payload
 
 Base.metadata.create_all(bind=engine)
 
@@ -43,7 +123,7 @@ frontend_origins = [
     origin.strip().rstrip("/")
     for origin in os.getenv(
         "FRONTEND_URL",
-        "http://localhost:5173,http://127.0.0.1:5173",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5181,http://127.0.0.1:5181",
     ).split(",")
     if origin.strip()
 ]
@@ -55,6 +135,50 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+import hmac
+
+@app.post("/api/auth/login", response_model=LoginResponse)
+def admin_login(payload: LoginRequest):
+    admin_username = os.getenv("SENTINELAI_ADMIN_USERNAME", "").strip()
+    admin_password_hash = os.getenv(
+        "SENTINELAI_ADMIN_PASSWORD_HASH", ""
+    ).strip()
+
+    if not admin_username or not admin_password_hash:
+        raise HTTPException(
+            status_code=503,
+            detail="Admin login is not configured",
+        )
+
+    username_matches = hmac.compare_digest(
+        payload.username, admin_username
+    )
+    password_matches = verify_password(
+        payload.password, admin_password_hash
+    )
+
+    if not username_matches or not password_matches:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password",
+        )
+
+    try:
+        token = create_access_token(admin_username)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503,
+            detail="Token secret is not configured",
+        )
+
+    return LoginResponse(
+        access_token=token,
+        expires_in=1800,
+        username=admin_username,
+        role="admin",
+    )
+
 
 
 ai = ThreatDetectionAI()
@@ -142,15 +266,24 @@ def analyze_threat(
         event.packets // 50
     )
 
-    anomaly_score = ai.analyze(
-
+    # Obtain the full model output while preserving the existing risk policy.
+    model_result = ai.analyze_detailed(
         packets=event.packets,
-
         bytes_transferred=event.bytes_transferred,
-
         port=event.port,
+        failed_attempts=failed_attempts,
+    )
+    anomaly_score = model_result["anomaly_score"]
 
-        failed_attempts=failed_attempts
+    # Port 0 is treated as unknown, matching the existing request schema default.
+    explanation = explain_detection(
+        packets=event.packets,
+        bytes_transferred=event.bytes_transferred,
+        port=event.port,
+        failed_attempts=failed_attempts,
+        threat_type=model_result["threat_type"],
+        anomaly_score=anomaly_score,
+        confidence=model_result["confidence"],
     )
 
     device_risk = 80 if event.port in [
@@ -246,6 +379,8 @@ def analyze_threat(
     )
 
 
+    # Expose explanation in this response without adding a database column.
+    threat.explanation = explanation
     return threat
 
 
@@ -278,6 +413,20 @@ def incident_response(incident, db):
             if threat else None
         ),
     }
+
+
+@app.post("/api/response/playbook")
+def get_response_playbook(payload: ResponsePlaybookRequest):
+    from response_playbooks import recommend_response
+
+    try:
+        return recommend_response(
+            threat_type=payload.threat_type,
+            severity=payload.severity,
+            risk_score=payload.risk_score,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @app.get("/api/incidents")
@@ -478,115 +627,583 @@ def zero_trust_check(
     request: ZeroTrustRequest,
     db: Session = Depends(get_db)
 ):
+    original_risk = float(request.risk_score)
 
-    risk = request.risk_score
-
-    if not request.identity_verified:
-        return ZeroTrustResponse(
-            decision="BLOCK",
-            risk_score=100,
-            identity="UNVERIFIED",
-            device="UNKNOWN",
-            context="DENIED",
-            reason="Identity verification failed."
-        )
+    device_adjustment = 0
+    location_adjustment = 0
+    network_adjustment = 0
+    compliance_adjustment = 0
+    posture_adjustment = round((100 - request.device_posture_score) * 0.25)
+    failed_login_adjustment = min(request.failed_login_attempts * 3, 15)
+    behavior_adjustment = 20 if request.unusual_activity else 0
+    session_adjustment = (
+        10 if request.session_age_minutes >= 1440
+        else 5 if request.session_age_minutes >= 480
+        else 0
+    )
+    resource_adjustment = {
+        "LOW": 0,
+        "NORMAL": 0,
+        "HIGH": 5,
+        "CRITICAL": 10,
+    }[request.resource_sensitivity]
 
     if not request.device_trusted:
-        risk = min(100, risk + 25)
+        device_adjustment = 25
 
-    if request.location.lower() in [
+    if request.location.strip().lower() in {
         "unknown",
         "untrusted",
-        "foreign"
-    ]:
-        risk = min(100, risk + 15)
+        "foreign",
+    }:
+        location_adjustment = 15
 
-    if risk >= 80:
+    if not request.network_trusted:
+        network_adjustment = 15
 
+    if not request.device_compliant:
+        compliance_adjustment = 15
+
+    total_adjustment = (
+        device_adjustment
+        + location_adjustment
+        + network_adjustment
+        + compliance_adjustment
+        + posture_adjustment
+        + failed_login_adjustment
+        + behavior_adjustment
+        + session_adjustment
+        + resource_adjustment
+    )
+
+    if not request.identity_verified:
+        final_risk = 100
         decision = "BLOCK"
-
-        reason = (
-            "Critical risk detected. "
-            "Access blocked and security incident recommended."
-        )
-
-    elif risk >= 60:
-
-        decision = "BLOCK"
-
-        reason = (
-            "High risk detected. "
-            "Zero Trust policy requires access denial."
-        )
-
-    elif risk >= 30:
-
-        decision = "MFA"
-
-        reason = (
-            "Medium risk detected. "
-            "Additional authentication is required."
-        )
-
+        reason = "Identity verification failed. Access denied."
+        threshold = "Unverified identity: immediate block"
+        identity = "UNVERIFIED"
+        device = "UNKNOWN"
+        context = "DENIED"
     else:
-
-        decision = "ALLOW"
-
-        reason = (
-            "Low risk. Identity and device posture "
-            "meet Zero Trust requirements."
+        final_risk = min(
+            100,
+            original_risk + total_adjustment
         )
+
+        identity = "VERIFIED"
+        device = "TRUSTED" if request.device_trusted else "UNTRUSTED"
+        context = request.location
+
+        if final_risk >= 80:
+            decision = "BLOCK"
+            threshold = "Critical risk: 80-100"
+            reason = (
+                "Critical risk detected. Access denied; "
+                "a security incident is recommended."
+            )
+        elif final_risk >= 60:
+            decision = "BLOCK"
+            threshold = "High risk: 60-79.99"
+            reason = (
+                "High risk detected. Zero Trust policy requires "
+                "access denial."
+            )
+        elif location_adjustment > 0 and final_risk < 60:
+            decision = "MFA"
+            threshold = "Flagged location: MFA required"
+            reason = (
+                "The location is flagged as untrusted. "
+                "Additional authentication is required."
+            )
+        elif final_risk >= 30:
+            decision = "MFA"
+            threshold = "Medium risk: 30-59.99"
+            reason = (
+                "Medium risk detected. Additional authentication "
+                "is required."
+            )
+        else:
+            decision = "ALLOW"
+            threshold = "Low risk: 0-29.99"
+            reason = (
+                "Low risk. Identity and device posture meet "
+                "the configured policy."
+            )
+
+    final_risk = round(final_risk, 2)
+
+    risk_breakdown = {
+        "original_score": round(original_risk, 2),
+        "device_adjustment": device_adjustment,
+        "location_adjustment": location_adjustment,
+        "network_adjustment": network_adjustment,
+        "compliance_adjustment": compliance_adjustment,
+        "posture_adjustment": posture_adjustment,
+        "device_posture_score": request.device_posture_score,
+        "failed_login_adjustment": failed_login_adjustment,
+        "behavior_adjustment": behavior_adjustment,
+        "session_adjustment": session_adjustment,
+        "resource_adjustment": resource_adjustment,
+        "total_adjustment": total_adjustment,
+        "network_trusted": request.network_trusted,
+        "device_compliant": request.device_compliant,
+        "failed_login_attempts": request.failed_login_attempts,
+        "unusual_activity": request.unusual_activity,
+        "session_age_minutes": request.session_age_minutes,
+        "resource_sensitivity": request.resource_sensitivity,
+        "final_score": final_risk,
+        "identity_verified": request.identity_verified,
+        "device_trusted": request.device_trusted,
+        "location_flagged": location_adjustment > 0,
+        "score_cap": 100,
+    }
 
     create_audit_log(
         db=db,
         event_type="ZERO_TRUST",
         message=(
-            f"User {request.user} requested "
-            f"{request.resource}. "
-            f"Decision: {decision}. "
-            f"Risk: {round(risk, 2)}"
+            f"User {request.user} requested {request.resource}. "
+            f"Decision: {decision}. Risk: {final_risk}. "
+            f"Policy: {threshold}."
         ),
         severity=(
-            "HIGH"
-            if decision == "BLOCK"
-            else "WARNING"
-            if decision == "MFA"
+            "HIGH" if decision == "BLOCK"
+            else "WARNING" if decision == "MFA"
             else "INFO"
         ),
-        action=decision
+        action=decision,
     )
 
     return ZeroTrustResponse(
-
         decision=decision,
-
-        risk_score=round(risk, 2),
-
-        identity=(
-            "VERIFIED"
-            if request.identity_verified
-            else "UNVERIFIED"
-        ),
-
-        device=(
-            "TRUSTED"
-            if request.device_trusted
-            else "UNTRUSTED"
-        ),
-
-        context=request.location,
-
-        reason=reason
+        risk_score=final_risk,
+        identity=identity,
+        device=device,
+        context=context,
+        reason=reason,
+        risk_breakdown=risk_breakdown,
+        policy_threshold=threshold,
     )
 
 
 # =========================================================
+
+
+# =========================================================
+# PERSISTENT ZERO TRUST SESSION MANAGEMENT
+# =========================================================
+
+@app.post("/api/sessions", status_code=201)
+def create_user_session(
+    request: ZeroTrustRequest,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    result = zero_trust_check(request, db)
+
+    record = UserSession(
+        user=request.user,
+        device=request.device,
+        resource=request.resource,
+        location=request.location,
+        risk_score=result.risk_score,
+        decision=result.decision,
+        identity_verified=int(request.identity_verified),
+        device_trusted=int(request.device_trusted),
+        network_trusted=int(request.network_trusted),
+        device_compliant=int(request.device_compliant),
+        device_posture_score=request.device_posture_score,
+        failed_login_attempts=request.failed_login_attempts,
+        unusual_activity=int(request.unusual_activity),
+        session_age_minutes=request.session_age_minutes,
+        resource_sensitivity=request.resource_sensitivity,
+        status="ACTIVE",
+    )
+
+    db.add(record)
+    db.flush()
+
+    db.add(SessionEvent(
+        session_id=record.id,
+        event_type="SESSION_CREATED",
+        message=f"Session created for {request.user}",
+        risk_score=result.risk_score,
+        decision=result.decision,
+    ))
+
+    db.commit()
+    db.refresh(record)
+
+    return {
+        "message": "Session registered",
+        "session": serialize_user_session(record),
+    }
+
+
+def serialize_user_session(record):
+    return {
+        "id": record.id,
+        "user": record.user,
+        "device": record.device,
+        "resource": record.resource,
+        "location": record.location,
+        "risk": record.risk_score,
+        "decision": record.decision,
+        "status": record.status,
+        "age": record.session_age_minutes,
+        "created_at": (
+            record.created_at.isoformat()
+            if record.created_at else None
+        ),
+        "updated_at": (
+            record.updated_at.isoformat()
+            if record.updated_at else None
+        ),
+    }
+
+
+@app.get("/api/sessions")
+def list_user_sessions(
+    status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    query = db.query(UserSession)
+
+    if status:
+        normalized = status.strip().upper()
+        if normalized not in {"ACTIVE", "TERMINATED"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Status must be ACTIVE or TERMINATED",
+            )
+        query = query.filter(UserSession.status == normalized)
+
+    records = query.order_by(UserSession.created_at.desc()).limit(200).all()
+
+    return {
+        "count": len(records),
+        "sessions": [serialize_user_session(item) for item in records],
+    }
+
+
+@app.post("/api/sessions/{session_id}/reassess")
+def reassess_user_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    record = db.query(UserSession).filter(
+        UserSession.id == session_id
+    ).first()
+
+    if record is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if record.status != "ACTIVE":
+        raise HTTPException(status_code=409, detail="Session is terminated")
+
+    request = ZeroTrustRequest(
+        user=record.user,
+        device=record.device,
+        resource=record.resource,
+        location=record.location,
+        risk_score=record.risk_score,
+        identity_verified=bool(record.identity_verified),
+        device_trusted=bool(record.device_trusted),
+        network_trusted=bool(record.network_trusted),
+        device_compliant=bool(record.device_compliant),
+        device_posture_score=record.device_posture_score,
+        failed_login_attempts=record.failed_login_attempts,
+        unusual_activity=bool(record.unusual_activity),
+        session_age_minutes=record.session_age_minutes,
+        resource_sensitivity=record.resource_sensitivity,
+    )
+
+    result = zero_trust_check(request, db)
+
+    record.risk_score = result.risk_score
+    record.decision = result.decision
+    record.updated_at = datetime.utcnow()
+
+    db.add(SessionEvent(
+        session_id=record.id,
+        event_type="SESSION_REASSESSED",
+        message=f"Session reassessed: {result.decision}",
+        risk_score=result.risk_score,
+        decision=result.decision,
+    ))
+
+    db.commit()
+    db.refresh(record)
+
+    return {
+        "message": "Session risk reassessed",
+        "session": serialize_user_session(record),
+        "risk_breakdown": result.risk_breakdown,
+        "reason": result.reason,
+    }
+
+
+@app.post("/api/sessions/{session_id}/terminate")
+def terminate_user_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    record = db.query(UserSession).filter(
+        UserSession.id == session_id
+    ).first()
+
+    if record is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if record.status == "TERMINATED":
+        raise HTTPException(status_code=409, detail="Session already terminated")
+
+    record.status = "TERMINATED"
+    record.updated_at = datetime.utcnow()
+
+    db.add(SessionEvent(
+        session_id=record.id,
+        event_type="SESSION_TERMINATED",
+        message=f"Session terminated for {record.user}",
+        risk_score=record.risk_score,
+        decision="TERMINATED",
+    ))
+
+    db.commit()
+    db.refresh(record)
+
+    return {
+        "message": "Session marked as terminated",
+        "session": serialize_user_session(record),
+    }
+
+
+@app.get("/api/sessions/events")
+def list_session_events(
+    session_id: Optional[int] = None,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    query = db.query(SessionEvent)
+
+    if session_id is not None:
+        query = query.filter(SessionEvent.session_id == session_id)
+
+    events = query.order_by(
+        SessionEvent.created_at.desc()
+    ).limit(200).all()
+
+    return {
+        "count": len(events),
+        "events": [
+            {
+                "id": event.id,
+                "session_id": event.session_id,
+                "event_type": event.event_type,
+                "message": event.message,
+                "risk_score": event.risk_score,
+                "decision": event.decision,
+                "created_at": (
+                    event.created_at.isoformat()
+                    if event.created_at else None
+                ),
+            }
+            for event in events
+        ],
+    }
+
+
+
+
+
+# CUSTOM FIREWALL RULE MANAGEMENT
+# Database-backed rules created through the Firewall Rule Builder.
+
+class FirewallRuleCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=128)
+    source: str = Field(default="Any", max_length=128)
+    destination: str = Field(default="Any", max_length=128)
+    port: str = Field(min_length=1, max_length=32)
+    protocol: str = Field(default="TCP", max_length=16)
+    action: str = Field(default="BLOCK", max_length=16)
+    priority: int = Field(default=50, ge=1, le=1000)
+    description: str = Field(default="", max_length=500)
+
+
+class FirewallRuleUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=2, max_length=128)
+    source: Optional[str] = Field(default=None, max_length=128)
+    destination: Optional[str] = Field(default=None, max_length=128)
+    port: Optional[str] = Field(default=None, max_length=32)
+    protocol: Optional[str] = Field(default=None, max_length=16)
+    action: Optional[str] = Field(default=None, max_length=16)
+    priority: Optional[int] = Field(default=None, ge=1, le=1000)
+    description: Optional[str] = Field(default=None, max_length=500)
+
+
+def serialize_custom_firewall_rule(rule):
+    return {
+        "id": rule.id,
+        "name": rule.name,
+        "source": rule.source,
+        "destination": rule.destination,
+        "port": rule.port,
+        "protocol": rule.protocol,
+        "action": rule.action,
+        "status": rule.status,
+        "priority": rule.priority,
+        "description": rule.description or "",
+        "custom": True,
+        "created_at": rule.created_at.isoformat() if rule.created_at else None,
+        "updated_at": rule.updated_at.isoformat() if rule.updated_at else None,
+    }
+
+
+def validate_firewall_rule_values(values):
+    protocol = str(values.get("protocol", "TCP")).strip().upper()
+    action = str(values.get("action", "BLOCK")).strip().upper()
+    port = str(values.get("port", "")).strip()
+    source_ip = str(values.get("source", "Any")).strip()
+    destination_ip = str(values.get("destination", "Any")).strip()
+
+    if protocol not in {"TCP", "UDP", "ICMP", "ANY"}:
+        raise HTTPException(status_code=422, detail="Protocol must be TCP, UDP, ICMP or ANY.")
+
+    if action not in {"ALLOW", "BLOCK", "MONITOR"}:
+        raise HTTPException(status_code=422, detail="Action must be ALLOW, BLOCK or MONITOR.")
+
+    if protocol == "ICMP" and port != "*":
+        raise HTTPException(status_code=422, detail="ICMP rules must use * for the port.")
+
+    if port != "*":
+        parts = port.split("-")
+        try:
+            if len(parts) == 1:
+                first = last = int(parts[0])
+            elif len(parts) == 2:
+                first, last = int(parts[0]), int(parts[1])
+            else:
+                raise ValueError
+
+            if not (1 <= first <= last <= 65535):
+                raise ValueError
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail="Port must be *, a number from 1 to 65535, or a valid range such as 8000-8100.",
+            )
+
+    for field_name, value in (("Source", source_ip), ("Destination", destination_ip)):
+        if value.lower() != "any":
+            try:
+                ipaddress.ip_network(value, strict=False)
+            except ValueError:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"{field_name} must be Any, an IP address or a CIDR range.",
+                )
+
+    values["protocol"] = protocol
+    values["action"] = action
+    values["port"] = port
+    values["source"] = source_ip
+    values["destination"] = destination_ip
+
+
+@app.post("/api/firewall/rules")
+def create_custom_firewall_rule(
+    payload: FirewallRuleCreate,
+    db: Session = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    values = payload.model_dump()
+    validate_firewall_rule_values(values)
+
+    rule = FirewallRule(
+        **values,
+        status="ACTIVE",
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return serialize_custom_firewall_rule(rule)
+
+
+@app.put("/api/firewall/rules/{rule_id}")
+def update_custom_firewall_rule(
+    rule_id: int,
+    payload: FirewallRuleUpdate,
+    db: Session = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    rule = db.query(FirewallRule).filter(FirewallRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Custom firewall rule not found.")
+
+    values = payload.model_dump(exclude_unset=True)
+    validate_firewall_rule_values({
+        "source": values.get("source", rule.source),
+        "destination": values.get("destination", rule.destination),
+        "port": values.get("port", rule.port),
+        "protocol": values.get("protocol", rule.protocol),
+        "action": values.get("action", rule.action),
+    })
+
+    for key, value in values.items():
+        if value is not None:
+            setattr(rule, key, value)
+
+    rule.protocol = rule.protocol.upper()
+    rule.action = rule.action.upper()
+    rule.updated_at = datetime.utcnow()
+
+    db.commit()
+    db.refresh(rule)
+    return serialize_custom_firewall_rule(rule)
+
+
+@app.post("/api/firewall/rules/{rule_id}/status")
+def set_custom_firewall_rule_status(
+    rule_id: int,
+    enabled: bool,
+    db: Session = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    rule = db.query(FirewallRule).filter(FirewallRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Custom firewall rule not found.")
+
+    rule.status = "ACTIVE" if enabled else "DISABLED"
+    rule.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(rule)
+    return serialize_custom_firewall_rule(rule)
+
+
+@app.delete("/api/firewall/rules/{rule_id}")
+def delete_custom_firewall_rule(
+    rule_id: int,
+    db: Session = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    rule = db.query(FirewallRule).filter(FirewallRule.id == rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404, detail="Custom firewall rule not found.")
+
+    db.delete(rule)
+    db.commit()
+    return {"message": "Custom firewall rule deleted.", "id": rule_id}
+
+
 # FIREWALL RULES
 # =========================================================
 
 firewall_rules = [
     {
-        "id": 1,
+        "id": -1,
         "name": "Block Port Scan",
         "source": "Any",
         "destination": "Internal Network",
@@ -597,7 +1214,7 @@ firewall_rules = [
         "priority": 100,
     },
     {
-        "id": 2,
+        "id": -2,
         "name": "Allow HTTPS",
         "source": "Any",
         "destination": "Web Server",
@@ -608,7 +1225,7 @@ firewall_rules = [
         "priority": 50,
     },
     {
-        "id": 3,
+        "id": -3,
         "name": "Block Telnet",
         "source": "Any",
         "destination": "Internal Network",
@@ -619,7 +1236,7 @@ firewall_rules = [
         "priority": 100,
     },
     {
-        "id": 4,
+        "id": -4,
         "name": "Allow DNS",
         "source": "Internal Network",
         "destination": "DNS Server",
@@ -632,11 +1249,189 @@ firewall_rules = [
 ]
 
 
+
+# FIREWALL RULE CONFLICT DETECTION
+# Compares default and custom rules without changing enforcement.
+
+def _conflict_source_overlap(source_a, source_b):
+    import ipaddress
+
+    a = str(source_a or "Any").strip()
+    b = str(source_b or "Any").strip()
+
+    if a.lower() == "any" or b.lower() == "any":
+        return True, False
+
+    try:
+        net_a = ipaddress.ip_network(a, strict=False)
+        net_b = ipaddress.ip_network(b, strict=False)
+
+        if net_a.version != net_b.version:
+            return False, False
+
+        return net_a.overlaps(net_b), False
+    except ValueError:
+        # Legacy labels such as "Internal Network" are not CIDRs.
+        # Conservatively report possible overlap, not confirmed overlap.
+        return True, True
+
+
+def _conflict_port_overlap(port_a, port_b):
+    a = str(port_a or "*").strip()
+    b = str(port_b or "*").strip()
+    return a == "*" or b == "*" or a == b
+
+
+def _conflict_protocol_overlap(protocol_a, protocol_b):
+    a = str(protocol_a or "TCP").upper()
+    b = str(protocol_b or "TCP").upper()
+    return a == "ANY" or b == "ANY" or a == b
+
+
+def _conflict_rule_view(rule):
+    return {
+        "id": rule.get("id"),
+        "name": rule.get("name"),
+        "source": rule.get("source", "Any"),
+        "destination": rule.get("destination", "Any"),
+        "port": str(rule.get("port", "*")),
+        "protocol": str(rule.get("protocol", "TCP")).upper(),
+        "action": str(rule.get("action", "BLOCK")).upper(),
+        "status": str(rule.get("status", "ACTIVE")).upper(),
+        "priority": int(rule.get("priority", 0)),
+        "custom": bool(rule.get("custom", False)),
+    }
+
+
+@app.get("/api/firewall/rules/conflicts")
+def firewall_rule_conflicts(
+    db: Session = Depends(get_db),
+    admin=Depends(get_current_admin),
+):
+    custom_rules = db.query(FirewallRule).all()
+
+    all_rules = [
+        _conflict_rule_view({**rule, "custom": False})
+        for rule in firewall_rules
+    ]
+
+    all_rules.extend(
+        _conflict_rule_view(serialize_custom_firewall_rule(rule))
+        for rule in custom_rules
+    )
+
+    active_rules = [
+        rule for rule in all_rules if rule["status"] == "ACTIVE"
+    ]
+
+    findings = []
+
+    for index, first in enumerate(active_rules):
+        for second in active_rules[index + 1:]:
+            source_overlap, uncertain_source = _conflict_source_overlap(
+                first["source"], second["source"]
+            )
+
+            if not source_overlap:
+                continue
+
+            if not _conflict_port_overlap(first["port"], second["port"]):
+                continue
+
+            if not _conflict_protocol_overlap(
+                first["protocol"], second["protocol"]
+            ):
+                continue
+
+            same_action = first["action"] == second["action"]
+
+            exact_match = (
+                first["source"].strip().lower()
+                == second["source"].strip().lower()
+                and first["port"] == second["port"]
+                and first["protocol"] == second["protocol"]
+            )
+
+            if same_action and exact_match:
+                conflict_type = "DUPLICATE"
+                severity = "LOW"
+                message = "Rules have identical matching conditions and actions."
+            elif not same_action:
+                conflict_type = "ACTION_CONFLICT"
+                severity = "HIGH"
+                message = (
+                    f"Overlapping rules use different actions: "
+                    f"{first['action']} and {second['action']}."
+                )
+            else:
+                conflict_type = "OVERLAP"
+                severity = "MEDIUM"
+                message = "Rules overlap and may both match the same traffic."
+
+            if uncertain_source:
+                severity = "MEDIUM" if severity == "LOW" else severity
+                message += (
+                    " Source scope uses a descriptive label, so overlap "
+                    "is conservative and requires manual verification."
+                )
+
+            destination_note = None
+            if first["destination"] != second["destination"]:
+                destination_note = (
+                    "Destination values differ, but destination matching "
+                    "is not currently enforced by the traffic evaluator."
+                )
+
+            findings.append({
+                "type": conflict_type,
+                "severity": severity,
+                "message": message,
+                "rule_a": first,
+                "rule_b": second,
+                "same_priority": first["priority"] == second["priority"],
+                "destination_note": destination_note,
+                "source_overlap_uncertain": uncertain_source,
+            })
+
+    return {
+        "total_rules": len(all_rules),
+        "active_rules": len(active_rules),
+        "disabled_rules": len(all_rules) - len(active_rules),
+        "conflict_count": len(findings),
+        "high_severity": sum(
+            item["severity"] == "HIGH" for item in findings
+        ),
+        "medium_severity": sum(
+            item["severity"] == "MEDIUM" for item in findings
+        ),
+        "low_severity": sum(
+            item["severity"] == "LOW" for item in findings
+        ),
+        "conflicts": findings,
+        "simulation_only": True,
+    }
+
+
 @app.get("/api/firewall/rules")
-def get_firewall_rules():
+def get_firewall_rules(db: Session = Depends(get_db)):
+    custom_rules = db.query(FirewallRule).all()
+
+    default_rules = [
+        {**rule, "custom": False}
+        for rule in firewall_rules
+    ]
+
+    persistent_rules = [
+        serialize_custom_firewall_rule(rule)
+        for rule in custom_rules
+    ]
+
     return sorted(
-        firewall_rules,
-        key=lambda rule: (-rule.get("priority", 0), rule["id"]),
+        default_rules + persistent_rules,
+        key=lambda rule: (
+            -int(rule.get("priority", 0)),
+            int(rule["id"]) + (1000000 if rule.get("custom") else 0),
+        ),
     )
 
 
@@ -652,27 +1447,111 @@ def toggle_firewall_rule(rule_id: int):
     raise HTTPException(status_code=404, detail="Firewall rule not found")
 
 
-def source_matches(rule_source: str, source_ip: str | None) -> bool:
-    """Match Any, an IP address, or a CIDR network.
+def ip_scope_matches(rule_scope: str, address: str | None) -> bool:
+    """Match Any, an IP address, or a CIDR network."""
+    scope = str(rule_scope or "Any").strip()
 
-    Existing descriptive scopes such as 'Internal Network' are retained
-    for compatibility. Configure them as real CIDRs before relying on them
-    for production source-network restrictions.
-    """
-    if rule_source.strip().lower() == "any":
+    if scope.lower() == "any":
         return True
 
     try:
-        network = ipaddress.ip_network(rule_source, strict=False)
+        network = ipaddress.ip_network(scope, strict=False)
     except ValueError:
-        # Legacy descriptive labels are not actual IP access controls.
+        # Preserve legacy descriptive scopes for existing default rules.
         return True
 
-    if not source_ip:
+    if not address:
         return False
 
-    return ipaddress.ip_address(source_ip) in network
+    try:
+        candidate = ipaddress.ip_address(address)
+    except ValueError:
+        return False
 
+    return candidate.version == network.version and candidate in network
+
+
+def source_matches(rule_source: str, source_ip: str | None) -> bool:
+    """Backward-compatible source matching."""
+    return ip_scope_matches(rule_source, source_ip)
+
+
+def destination_matches(rule_destination: str, destination_ip: str | None) -> bool:
+    """Match a destination IP/CIDR or a legacy descriptive scope."""
+    return ip_scope_matches(rule_destination, destination_ip)
+
+
+def port_matches(rule_port: str, traffic_port: int | None) -> bool:
+    """Match wildcard, exact port, or inclusive port range."""
+    pattern = str(rule_port or "").strip()
+
+    if pattern == "*":
+        return True
+
+    if traffic_port is None:
+        return False
+
+    try:
+        candidate = int(traffic_port)
+        parts = pattern.split("-")
+
+        if len(parts) == 1:
+            first = last = int(parts[0])
+        elif len(parts) == 2:
+            first, last = int(parts[0]), int(parts[1])
+        else:
+            return False
+
+        return 1 <= first <= last <= 65535 and first <= candidate <= last
+    except (TypeError, ValueError):
+        return False
+
+
+def protocol_matches(rule_protocol: str, traffic_protocol: str) -> bool:
+    """Match a specific protocol or ANY."""
+    expected = str(rule_protocol or "TCP").strip().upper()
+    actual = str(traffic_protocol or "").strip().upper()
+    return expected == "ANY" or expected == actual
+
+
+def get_matching_firewall_rules(db, port, protocol, source_ip=None, destination_ip=None):
+    """Return active matching rules in deterministic priority order."""
+    custom_rules = db.query(FirewallRule).all()
+
+    custom_rule_dicts = [
+        {
+            "id": rule.id,
+            "name": rule.name,
+            "source": rule.source,
+            "destination": rule.destination,
+            "port": rule.port,
+            "protocol": rule.protocol,
+            "action": rule.action,
+            "status": rule.status,
+            "priority": rule.priority,
+            "custom": True,
+        }
+        for rule in custom_rules
+    ]
+
+    all_rules = list(firewall_rules) + custom_rule_dicts
+
+    matching = [
+        rule for rule in all_rules
+        if str(rule.get("status", "")).upper() == "ACTIVE"
+        and port_matches(rule.get("port", ""), port)
+        and protocol_matches(rule.get("protocol", "TCP"), protocol)
+        and source_matches(rule.get("source", "Any"), source_ip)
+        and destination_matches(rule.get("destination", "Any"), destination_ip)
+    ]
+
+    return sorted(
+        matching,
+        key=lambda rule: (
+            -int(rule.get("priority", 0)),
+            int(rule.get("id", 0)) + (1000000 if rule.get("custom") else 0),
+        ),
+    )
 
 
 # TEMPORARY IP BLOCKING AND RATE LIMITING
@@ -830,6 +1709,7 @@ def evaluate_firewall(
     port: int,
     protocol: str = "TCP",
     source_ip: str | None = None,
+    destination_ip: str | None = None,
     db: Session = Depends(get_db),
 ):
     if not 1 <= port <= 65535:
@@ -839,14 +1719,16 @@ def evaluate_firewall(
         )
 
     protocol = protocol.strip().upper()
-    if protocol not in {"TCP", "UDP"}:
+    if protocol not in {"TCP", "UDP", "ICMP"}:
         raise HTTPException(
             status_code=422,
-            detail="Protocol must be TCP or UDP",
+            detail="Protocol must be TCP, UDP or ICMP",
         )
 
     if source_ip:
         source_ip = _valid_source_ip(source_ip)
+    if destination_ip:
+        destination_ip = _valid_source_ip(destination_ip)
 
     now = time.time()
     forced_block_reason = None
@@ -897,22 +1779,20 @@ def evaluate_firewall(
         matched = True
         priority = 1000
     else:
-        matching_rules = sorted(
-            (
-                rule for rule in firewall_rules
-                if rule["status"] == "ACTIVE"
-                and rule["port"] == str(port)
-                and rule["protocol"] == protocol
-                and source_matches(rule.get("source", "Any"), source_ip)
-            ),
-            key=lambda rule: (-rule.get("priority", 0), rule["id"]),
+        matching_rules = get_matching_firewall_rules(
+            db, port, protocol, source_ip, destination_ip
         )
-
         matched = bool(matching_rules)
         rule = matching_rules[0] if matched else None
         action = rule["action"] if rule else "BLOCK"
         rule_name = rule["name"] if rule else "Default Deny Policy"
         priority = rule.get("priority", 0) if rule else 0
+
+        matched_rule_type = (
+            "CUSTOM" if rule and rule.get("custom")
+            else "DEFAULT" if rule
+            else "DEFAULT_DENY"
+        )
 
     create_audit_log(
         db,
@@ -934,9 +1814,161 @@ def evaluate_firewall(
         "port": port,
         "protocol": protocol,
         "source_ip": source_ip,
+        "destination_ip": destination_ip,
         "priority": priority,
+        "rule_type": (
+            "TEMPORARY_BLOCK" if forced_block_reason
+            else matched_rule_type
+        ),
+        "monitor_only": action == "MONITOR",
         "temporary_block": bool(forced_block_reason),
         "block_reason": block_details["reason"] if forced_block_reason else None,
+        "simulation_mode": True,
+    }
+
+
+
+
+# =========================================================
+# ADVANCED FIREWALL: POLICY SIMULATOR AND RULE ANALYTICS
+# =========================================================
+
+@app.get("/api/firewall/simulate")
+def simulate_firewall_policy(
+    port: int,
+    protocol: str = "TCP",
+    source_ip: str | None = None,
+    destination_ip: str | None = None,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Dry-run firewall policy evaluation without changing protection state."""
+
+    if not 1 <= port <= 65535:
+        raise HTTPException(status_code=422, detail="Port must be between 1 and 65535")
+
+    protocol = protocol.strip().upper()
+    if protocol not in {"TCP", "UDP", "ICMP"}:
+        raise HTTPException(status_code=422, detail="Protocol must be TCP, UDP or ICMP")
+
+    if source_ip:
+        source_ip = _valid_source_ip(source_ip)
+    if destination_ip:
+        destination_ip = _valid_source_ip(destination_ip)
+
+    matching_rules = get_matching_firewall_rules(
+        db, port, protocol, source_ip, destination_ip
+    )
+    winner = matching_rules[0] if matching_rules else None
+    action = winner["action"] if winner else "BLOCK"
+
+    return {
+        "simulation_only": True,
+        "input": {
+            "source_ip": source_ip,
+            "destination_ip": destination_ip,
+            "port": port,
+            "protocol": protocol,
+        },
+        "decision": action,
+        "matched": winner is not None,
+        "winning_rule": winner,
+        "rule_type": (
+            "CUSTOM" if winner and winner.get("custom")
+            else "DEFAULT" if winner
+            else "DEFAULT_DENY"
+        ),
+        "priority": winner.get("priority", 0) if winner else 0,
+        "matching_rule_count": len(matching_rules),
+        "matching_rules": matching_rules,
+        "explanation": (
+            f"Highest-priority matching rule '{winner['name']}' "
+            f"selected action {action}."
+            if winner else
+            "No active rule matched. Default-deny policy selected BLOCK."
+        ),
+        "note": "This dry run does not modify firewall state or rate-limit counters.",
+    }
+
+
+@app.get("/api/firewall/analytics")
+def firewall_rule_analytics(
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Summarize recorded firewall decisions from persistent audit logs."""
+
+    logs = (
+        db.query(AuditLog)
+        .filter(AuditLog.event_type == "FIREWALL_DECISION")
+        .order_by(AuditLog.id.desc())
+        .limit(1000)
+        .all()
+    )
+
+    action_counts = {"ALLOW": 0, "BLOCK": 0, "MONITOR": 0, "OTHER": 0}
+    severity_counts = {}
+    source_counts = {}
+    rule_counts = {}
+    unknown_source_decisions = 0
+    identified_source_decisions = 0
+
+    for log in logs:
+        action = (log.action or "").upper()
+        if action in action_counts:
+            action_counts[action] += 1
+        else:
+            action_counts["OTHER"] += 1
+
+        severity = (log.severity or "UNKNOWN").upper()
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+
+        source = (log.source_ip or "").strip() or "Unknown"
+        if source.lower() == "unknown":
+            unknown_source_decisions += 1
+            source = "Unknown"
+        else:
+            identified_source_decisions += 1
+
+        source_counts[source] = source_counts.get(source, 0) + 1
+
+        message = log.message or ""
+        rule_name = "Unknown"
+        for part in message.split(";"):
+            if part.strip().startswith("Rule="):
+                rule_name = part.strip()[5:]
+                break
+        rule_counts[rule_name] = rule_counts.get(rule_name, 0) + 1
+
+    top_sources = sorted(
+        [{"source_ip": k, "hits": v} for k, v in source_counts.items()],
+        key=lambda item: item["hits"],
+        reverse=True,
+    )[:10]
+
+    top_rules = sorted(
+        [{"rule": k, "hits": v} for k, v in rule_counts.items()],
+        key=lambda item: item["hits"],
+        reverse=True,
+    )[:10]
+
+    return {
+        "total_decisions": len(logs),
+        "sample_limit": 1000,
+        "actions": action_counts,
+        "severities": severity_counts,
+        "top_sources": top_sources,
+        "top_rules": top_rules,
+        "source_attribution": {
+            "identified": identified_source_decisions,
+            "unknown": unknown_source_decisions,
+            "identified_percentage": round(
+                identified_source_decisions / len(logs) * 100, 2
+            ) if logs else 0,
+            "unknown_percentage": round(
+                unknown_source_decisions / len(logs) * 100, 2
+            ) if logs else 0,
+        },
         "simulation_mode": True,
     }
 
@@ -970,21 +2002,330 @@ def create_audit_log(
     return log
 
 
+
+
+@app.post("/api/response-actions", status_code=201)
+def create_response_action(
+    payload: ResponseActionCreate,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    if payload.incident_id is not None:
+        incident = db.query(Incident).filter(
+            Incident.id == payload.incident_id
+        ).first()
+        if incident is None:
+            raise HTTPException(status_code=404, detail="Incident not found")
+
+    action = ResponseAction(
+        incident_id=payload.incident_id,
+        threat_type=payload.threat_type.strip(),
+        risk_score=payload.risk_score,
+        recommended_action=payload.recommended_action.strip(),
+        requested_by=admin["sub"],
+        status="PENDING",
+        simulation_mode=1,
+    )
+    db.add(action)
+    db.flush()
+    create_audit_log(
+        db,
+        event_type="RESPONSE_ACTION_CREATED",
+        message=f"Response action {action.id} created for {action.threat_type}",
+        severity="INFO",
+        action="PENDING",
+    )
+    db.refresh(action)
+    return action
+
+
+@app.get("/api/response-actions")
+def list_response_actions(
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    return db.query(ResponseAction).order_by(
+        ResponseAction.created_at.desc()
+    ).limit(100).all()
+
+
+@app.post("/api/response-actions/{action_id}/review")
+def review_response_action(
+    action_id: int,
+    payload: ResponseActionReview,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    if payload.decision not in ("APPROVED", "REJECTED"):
+        raise HTTPException(status_code=422, detail="Decision must be APPROVED or REJECTED")
+
+    action = db.query(ResponseAction).filter(
+        ResponseAction.id == action_id
+    ).with_for_update().first()
+    if action is None:
+        raise HTTPException(status_code=404, detail="Response action not found")
+    if action.status != "PENDING":
+        raise HTTPException(status_code=409, detail="Only pending actions can be reviewed")
+
+    action.status = payload.decision
+    action.reviewed_by = admin["sub"]
+    action.review_note = payload.review_note.strip()
+    action.reviewed_at = datetime.utcnow()
+    db.add(action)
+    create_audit_log(
+        db,
+        event_type="RESPONSE_ACTION_REVIEWED",
+        message=f"Response action {action.id} {action.status.lower()} by {admin['sub']}",
+        severity="INFO" if action.status == "APPROVED" else "WARNING",
+        action=action.status,
+    )
+    db.refresh(action)
+    return action
+
+
+@app.post("/api/response-actions/{action_id}/rollback")
+def rollback_response_action(
+    action_id: int,
+    payload: ResponseActionRollback,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    action = db.query(ResponseAction).filter(
+        ResponseAction.id == action_id
+    ).with_for_update().first()
+    if action is None:
+        raise HTTPException(status_code=404, detail="Response action not found")
+    if action.status != "APPROVED" or action.simulation_mode != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Only approved simulated actions can be rolled back",
+        )
+    if action.rollback_status == "ROLLED_BACK":
+        raise HTTPException(status_code=409, detail="Action already rolled back")
+
+    action.rollback_status = "ROLLED_BACK"
+    action.rolled_back_at = datetime.utcnow()
+    action.review_note = (
+        f"{action.review_note}\nRollback by {admin['sub']}: "
+        f"{payload.review_note.strip()}"
+    ).strip()
+    db.add(action)
+    create_audit_log(
+        db,
+        event_type="RESPONSE_ACTION_ROLLED_BACK",
+        message=f"Simulated response action {action.id} rolled back by {admin['sub']}",
+        severity="WARNING",
+        action="ROLLED_BACK",
+    )
+    db.refresh(action)
+    return action
+
+
 @app.get("/api/logs")
 def get_logs(
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
 ):
-
-    return db.query(
-        AuditLog
-    ).order_by(
+    return db.query(AuditLog).order_by(
         AuditLog.created_at.desc()
     ).limit(100).all()
 
 
-# =========================================================
-# NETWORK MONITOR
-# =========================================================
+
+@app.get("/api/analytics/block-spike-alerts")
+def get_block_spike_alerts(
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Evaluate recent audit activity and return persisted BLOCK spike alerts."""
+
+    logs = (
+        db.query(AuditLog)
+        .order_by(AuditLog.created_at.desc())
+        .limit(100)
+        .all()
+    )
+
+    valid_events = []
+    valid_block_events = []
+
+    for log in logs:
+        timestamp = log.created_at
+        if not timestamp:
+            continue
+
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.replace(tzinfo=None)
+
+        valid_events.append(timestamp)
+
+        action = str(log.action or "").upper()
+        event_type = str(log.event_type or "").upper()
+
+        if action == "BLOCK" or "BLOCK" in event_type:
+            valid_block_events.append(timestamp)
+
+    if valid_events:
+        latest_timestamp = max(valid_events)
+        latest_hour = latest_timestamp.replace(
+            minute=0, second=0, microsecond=0
+        )
+        coverage_start = latest_hour - timedelta(hours=5)
+        oldest_event = min(valid_events)
+
+        hourly_blocks = []
+        for index in range(6):
+            start = latest_hour - timedelta(hours=5 - index)
+            end = start + timedelta(hours=1)
+            hourly_blocks.append(
+                sum(1 for timestamp in valid_block_events
+                    if start <= timestamp < end)
+            )
+
+        enough_data = oldest_event <= coverage_start
+    else:
+        latest_hour = None
+        hourly_blocks = []
+        enough_data = False
+
+    if enough_data:
+        latest_blocks = hourly_blocks[5]
+        baseline = sum(hourly_blocks[:5]) / 5
+        threshold = max(3, baseline * 2)
+
+        spike_detected = (
+            latest_blocks >= 3
+            and latest_blocks >= baseline * 2
+        )
+        critical_spike = (
+            spike_detected
+            and latest_blocks >= 6
+            and (baseline == 0 or latest_blocks >= baseline * 3)
+        )
+    else:
+        latest_blocks = 0
+        baseline = 0.0
+        threshold = 3.0
+        spike_detected = False
+        critical_spike = False
+
+    persisted_alert = None
+
+    if enough_data and spike_detected:
+        detection_key = latest_hour.strftime("%Y-%m-%dT%H:00:00")
+        severity = "CRITICAL" if critical_spike else "HIGH"
+
+        persisted_alert = (
+            db.query(BlockSpikeAlert)
+            .filter(BlockSpikeAlert.detection_key == detection_key)
+            .first()
+        )
+
+        if persisted_alert is None:
+            persisted_alert = BlockSpikeAlert(
+                detection_key=detection_key,
+                severity=severity,
+                latest_block_count=latest_blocks,
+                baseline_average=baseline,
+                detection_threshold=threshold,
+                status="OPEN",
+                detected_at=datetime.utcnow(),
+            )
+            db.add(persisted_alert)
+            try:
+                db.commit()
+                db.refresh(persisted_alert)
+            except IntegrityError:
+                db.rollback()
+                persisted_alert = (
+                    db.query(BlockSpikeAlert)
+                    .filter(BlockSpikeAlert.detection_key == detection_key)
+                    .first()
+                )
+        else:
+            # Update the detection data without resetting acknowledgement.
+            persisted_alert.severity = severity
+            persisted_alert.latest_block_count = latest_blocks
+            persisted_alert.baseline_average = baseline
+            persisted_alert.detection_threshold = threshold
+            db.commit()
+            db.refresh(persisted_alert)
+
+    alerts = (
+        db.query(BlockSpikeAlert)
+        .order_by(BlockSpikeAlert.detected_at.desc())
+        .limit(50)
+        .all()
+    )
+
+    return {
+        "detection": {
+            "status": (
+                "INSUFFICIENT DATA" if not enough_data
+                else "CRITICAL SPIKE" if critical_spike
+                else "HIGH SPIKE" if spike_detected
+                else "NO SPIKE DETECTED"
+            ),
+            "enough_data": enough_data,
+            "latest_blocks": latest_blocks,
+            "baseline": baseline,
+            "threshold": threshold,
+            "hourly_blocks": hourly_blocks,
+        },
+        "alerts": [
+            {
+                "id": alert.id,
+                "detection_key": alert.detection_key,
+                "severity": alert.severity,
+                "latest_block_count": alert.latest_block_count,
+                "baseline_average": alert.baseline_average,
+                "detection_threshold": alert.detection_threshold,
+                "status": alert.status,
+                "detected_at": alert.detected_at.isoformat()
+                    if alert.detected_at else None,
+                "acknowledged_at": alert.acknowledged_at.isoformat()
+                    if alert.acknowledged_at else None,
+                "acknowledged_by": alert.acknowledged_by,
+            }
+            for alert in alerts
+        ],
+    }
+
+
+@app.post("/api/analytics/block-spike-alerts/{alert_id}/acknowledge")
+def acknowledge_block_spike_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    """Acknowledge a persisted BLOCK spike alert."""
+
+    alert = (
+        db.query(BlockSpikeAlert)
+        .filter(BlockSpikeAlert.id == alert_id)
+        .first()
+    )
+
+    if alert is None:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    if alert.status != "ACKNOWLEDGED":
+        alert.status = "ACKNOWLEDGED"
+        alert.acknowledged_at = datetime.utcnow()
+        alert.acknowledged_by = str(admin.get("sub") or "admin")
+        db.commit()
+        db.refresh(alert)
+
+    return {
+        "id": alert.id,
+        "status": alert.status,
+        "acknowledged_at": (
+            alert.acknowledged_at.isoformat()
+            if alert.acknowledged_at else None
+        ),
+        "acknowledged_by": alert.acknowledged_by,
+    }
+
 
 @app.get("/api/network/summary")
 def network_summary(
@@ -1079,8 +2420,7 @@ def analytics(db: Session = Depends(get_db)):
 
 @app.post("/api/assistant")
 def security_assistant(question: str, db: Session = Depends(get_db)):
-
-    q = question.lower()
+    q = question.lower().strip()
 
     latest = (
         db.query(Threat)
@@ -1088,104 +2428,50 @@ def security_assistant(question: str, db: Session = Depends(get_db)):
         .first()
     )
 
-    if latest is None:
-        if "risk" in q or "score" in q:
-            return {
-                "answer": (
-                    "The current overall SentinelAI security score is "
-                    "100/100 (SECURE). No threats have been recorded, "
-                    "so there is no individual threat risk score yet."
-                ),
-                "threat": None
-            }
+    threats = (
+        db.query(Threat)
+        .order_by(Threat.created_at.desc())
+        .limit(100)
+        .all()
+    )
 
-        if "firewall" in q:
-            return {
-                "answer": (
-                    "The firewall is ACTIVE in AI ADAPTIVE mode. "
-                    "Dynamic response and Zero Trust are enabled. "
-                    "Simulation mode is active, so actions are simulated "
-                    "rather than enforced on real network traffic."
-                ),
-                "threat": None
-            }
+    incidents = (
+        db.query(Incident)
+        .order_by(Incident.created_at.desc())
+        .limit(100)
+        .all()
+    )
 
-        if "zero trust" in q or "zero-trust" in q:
-            return {
-                "answer": (
-                    "Zero Trust is enabled, including continuous "
-                    "verification, least privilege, identity verification, "
-                    "device trust, and risk-based access."
-                ),
-                "threat": None
-            }
+    rules = db.query(FirewallRule).all()
+    sessions = (
+        db.query(UserSession)
+        .order_by(UserSession.updated_at.desc())
+        .limit(100)
+        .all()
+    )
 
+    logs = (
+        db.query(AuditLog)
+        .order_by(AuditLog.created_at.desc())
+        .limit(100)
+        .all()
+    )
+
+    def count_values(items, attribute):
+        result = {}
+        for item in items:
+            value = getattr(item, attribute, None) or "UNKNOWN"
+            value = str(value).upper()
+            result[value] = result.get(value, 0) + 1
+        return result
+
+    def threat_context():
+        if latest is None:
+            return None
         return {
-            "answer": (
-                "No security events are available yet. The current "
-                "overall security score is 100/100 (SECURE). You can ask "
-                "about the risk score, firewall status, or Zero Trust."
-            ),
-            "threat": None
-        }
-
-    if "why" in q and ("blocked" in q or "block" in q):
-
-        answer = (
-            f"The latest connection was blocked because SentinelAI "
-            f"identified a {latest.threat_type} with a risk score of "
-            f"{latest.risk_score}. The AI anomaly score was "
-            f"{latest.anomaly_score}, which indicates suspicious traffic. "
-            f"The connection targeted port {latest.port} from "
-            f"{latest.source_ip}. Based on the risk engine, the threat "
-            f"was classified as {latest.severity} and the recommended "
-            f"firewall action was {latest.action}."
-        )
-
-    elif "risk" in q or "score" in q:
-
-        answer = (
-            f"The latest threat has a risk score of {latest.risk_score}/100. "
-            f"The AI anomaly score is {latest.anomaly_score}/100. "
-            f"The final classification is {latest.severity}. "
-            f"SentinelAI therefore selected the {latest.action} action."
-        )
-
-    elif "threat" in q or "attack" in q:
-
-        answer = (
-            f"The latest detected threat is a {latest.threat_type}. "
-            f"Traffic originated from {latest.source_ip} and targeted "
-            f"{latest.destination_ip} on port {latest.port} using "
-            f"{latest.protocol}. {latest.packets} packets and "
-            f"{latest.bytes_transferred} bytes were observed."
-        )
-
-    elif "recommend" in q or "recommendation" in q:
-
-        answer = (
-            f"Recommended response: keep the source {latest.source_ip} "
-            f"blocked, investigate the repeated Port Scan activity, "
-            f"review the affected device, and monitor for additional "
-            f"attempts. The current risk level is {latest.risk_score}/100."
-        )
-
-    else:
-
-        answer = (
-            f"Latest SentinelAI event: {latest.threat_type}, "
-            f"risk {latest.risk_score}/100, anomaly score "
-            f"{latest.anomaly_score}/100, severity {latest.severity}, "
-            f"action {latest.action}. "
-            f"Ask me why it was blocked, what the risk score means, "
-            f"what threat was detected, or what response is recommended."
-        )
-
-    return {
-        "answer": answer,
-        "threat": {
             "id": latest.id,
             "type": latest.threat_type,
+            "threat_type": latest.threat_type,
             "source_ip": latest.source_ip,
             "destination_ip": latest.destination_ip,
             "port": latest.port,
@@ -1193,8 +2479,247 @@ def security_assistant(question: str, db: Session = Depends(get_db)):
             "anomaly_score": latest.anomaly_score,
             "risk_score": latest.risk_score,
             "severity": latest.severity,
-            "action": latest.action
+            "action": latest.action,
         }
+
+    def average(values):
+        values = [float(v or 0) for v in values]
+        return round(sum(values) / len(values), 2) if values else 0
+
+    # Identify an IP address explicitly mentioned in the question.
+    import re
+    ip_match = re.search(
+        r'(?<![\w.])(?:\d{1,3}\.){3}\d{1,3}(?![\w.])',
+        question
+    )
+    requested_ip = ip_match.group(0) if ip_match else None
+
+    # SOURCE IP INVESTIGATION
+    if requested_ip:
+        matching_threats = [
+            t for t in threats if t.source_ip == requested_ip
+        ]
+        matching_logs = [
+            log for log in logs if log.source_ip == requested_ip
+        ]
+
+        matching_incidents = [
+            incident for incident in incidents
+            if any(
+                t.id == incident.threat_id
+                for t in matching_threats
+            )
+        ]
+
+        if matching_threats:
+            risk = average(t.risk_score for t in matching_threats)
+            types = count_values(matching_threats, "threat_type")
+            actions = count_values(matching_threats, "action")
+
+            answer = (
+                f"Source IP investigation: {requested_ip}\n"
+                f"Threat records found: {len(matching_threats)}\n"
+                f"Related incidents: {len(matching_incidents)}\n"
+                f"Matching audit events in the latest 100 logs: "
+                f"{len(matching_logs)}\n"
+                f"Average threat risk: {risk}/100\n"
+                f"Threat types: {types}\n"
+                f"Recorded actions: {actions}\n"
+                "Recommendation: review the associated events and "
+                "incident history. Consider a temporary block only "
+                "after validating the source and business impact."
+            )
+        else:
+            answer = (
+                f"No threat record for source IP {requested_ip} was "
+                "found in the latest 100 threat records. "
+                f"Matching audit events in the latest 100 logs: "
+                f"{len(matching_logs)}."
+            )
+
+    # INCIDENT INVESTIGATION
+    elif any(word in q for word in (
+        "incident", "investigation status", "case status"
+    )):
+        statuses = count_values(incidents, "status")
+        severities = count_values(incidents, "severity")
+        high_risk = sum(
+            1 for item in incidents
+            if (item.risk_score or 0) >= 70
+        )
+
+        answer = (
+            f"Incident investigation summary (latest {len(incidents)} "
+            "records):\n"
+            f"Total incidents: {len(incidents)}\n"
+            f"Statuses: {statuses}\n"
+            f"Severity distribution: {severities}\n"
+            f"Incidents with risk score >= 70: {high_risk}\n"
+            f"Average incident risk: "
+            f"{average(i.risk_score for i in incidents)}/100.\n"
+            "Recommendation: prioritize unresolved high-risk incidents, "
+            "record investigation notes, and verify resolution evidence."
+        )
+
+    # FIREWALL INVESTIGATION
+    elif "firewall" in q or "firewall rule" in q:
+        active_rules = [
+            rule for rule in rules
+            if str(rule.status).upper() == "ACTIVE"
+        ]
+        actions = count_values(active_rules, "action")
+
+        answer = (
+            f"Firewall policy review:\n"
+            f"Total configured rules: {len(rules)}\n"
+            f"Active rules: {len(active_rules)}\n"
+            f"Active rule actions: {actions}\n"
+            f"Disabled rules: {len(rules) - len(active_rules)}\n"
+            "Recommendation: review broad source or destination "
+            "matches, check conflicting rules, and use least-privilege "
+            "policies. SentinelAI firewall evaluation is a simulation "
+            "and does not itself enforce OS-level packet filtering."
+        )
+
+    # ZERO TRUST INVESTIGATION
+    elif "zero trust" in q or "zero-trust" in q or (
+        "session" in q and ("risk" in q or "access" in q)
+    ):
+        decisions = count_values(sessions, "decision")
+        statuses = count_values(sessions, "status")
+
+        risky = [
+            s for s in sessions if (s.risk_score or 0) >= 70
+        ]
+        identity_failures = sum(
+            1 for s in sessions if not s.identity_verified
+        )
+        untrusted_devices = sum(
+            1 for s in sessions if not s.device_trusted
+        )
+        noncompliant = sum(
+            1 for s in sessions if not s.device_compliant
+        )
+
+        answer = (
+            f"Zero Trust session review:\n"
+            f"Sessions examined: {len(sessions)}\n"
+            f"Access decisions: {decisions}\n"
+            f"Session statuses: {statuses}\n"
+            f"High-risk sessions (>=70): {len(risky)}\n"
+            f"Identity verification failures: {identity_failures}\n"
+            f"Untrusted devices: {untrusted_devices}\n"
+            f"Non-compliant devices: {noncompliant}\n"
+            "Recommendation: reassess high-risk sessions, verify "
+            "identity, validate device posture, and revoke access "
+            "when policy requirements are not satisfied."
+        )
+
+    # SECURITY OPERATIONS SUMMARY
+    elif any(word in q for word in (
+        "summary", "overall", "network risk", "security posture",
+        "security operations", "current network", "security status"
+    )):
+        severities = count_values(threats, "severity")
+        actions = count_values(threats, "action")
+        open_incidents = sum(
+            1 for i in incidents
+            if str(i.status).upper() in ("OPEN", "INVESTIGATING")
+        )
+        risky_sessions = sum(
+            1 for s in sessions if (s.risk_score or 0) >= 70
+        )
+
+        answer = (
+            "SentinelAI security operations summary:\n"
+            f"Threat records examined: {len(threats)}\n"
+            f"Threat severity distribution: {severities}\n"
+            f"Threat response actions: {actions}\n"
+            f"Average threat risk: "
+            f"{average(t.risk_score for t in threats)}/100\n"
+            f"Incident records examined: {len(incidents)}\n"
+            f"Open or investigating incidents: {open_incidents}\n"
+            f"Active firewall rules: "
+            f"{sum(1 for r in rules if str(r.status).upper() == 'ACTIVE')}\n"
+            f"Zero Trust sessions examined: {len(sessions)}\n"
+            f"High-risk sessions: {risky_sessions}\n"
+            f"Recent audit events examined: {len(logs)}.\n"
+            "Recommendation: prioritize critical threats, unresolved "
+            "incidents, high-risk sessions, and firewall policy conflicts."
+        )
+
+    # THREAT HISTORY AND INVESTIGATION
+    elif any(word in q for word in (
+        "threat", "attack", "blocked", "risk", "score",
+        "recommend", "recommendation", "detected"
+    )):
+        if latest is None:
+            answer = (
+                "No threat records are available yet. Create a demo "
+                "attack or submit network traffic for analysis."
+            )
+        else:
+            if "recommend" in q:
+                answer = (
+                    f"Recommended response for the latest "
+                    f"{latest.threat_type} event:\n"
+                    f"Source: {latest.source_ip}\n"
+                    f"Risk: {latest.risk_score}/100\n"
+                    f"Severity: {latest.severity}\n"
+                    f"Recorded action: {latest.action}\n"
+                    "Recommendation: investigate the source, review "
+                    "related incidents, validate the firewall decision, "
+                    "and monitor subsequent traffic. Avoid treating a "
+                    "simulated action as a real network block."
+                )
+            elif "why" in q and ("block" in q or "allow" in q):
+                answer = (
+                    f"The latest event is {latest.threat_type}, with "
+                    f"risk {latest.risk_score}/100 and anomaly score "
+                    f"{latest.anomaly_score}/100. Its severity is "
+                    f"{latest.severity} and recorded action is "
+                    f"{latest.action}. Source {latest.source_ip}, "
+                    f"destination {latest.destination_ip}, port "
+                    f"{latest.port}/{latest.protocol}. These recorded "
+                    "values explain the classification, but the exact "
+                    "decision logic should be checked in the threat "
+                    "detection and risk engine."
+                )
+            elif "risk" in q or "score" in q:
+                answer = (
+                    f"Latest threat risk: {latest.risk_score}/100\n"
+                    f"Anomaly score: {latest.anomaly_score}/100\n"
+                    f"Severity: {latest.severity}\n"
+                    f"Action: {latest.action}\n"
+                    f"Average risk across the latest {len(threats)} "
+                    f"threat records: "
+                    f"{average(t.risk_score for t in threats)}/100."
+                )
+            else:
+                answer = (
+                    f"Latest detected threat: {latest.threat_type}\n"
+                    f"Source: {latest.source_ip}\n"
+                    f"Destination: {latest.destination_ip}\n"
+                    f"Port/protocol: {latest.port}/{latest.protocol}\n"
+                    f"Packets: {latest.packets}\n"
+                    f"Bytes transferred: {latest.bytes_transferred}\n"
+                    f"Risk: {latest.risk_score}/100\n"
+                    f"Severity: {latest.severity}\n"
+                    f"Recorded action: {latest.action}\n"
+                    f"Threat records examined: {len(threats)}."
+                )
+
+    else:
+        answer = (
+            "I can investigate your SentinelAI database. Ask about "
+            "threat history, incident status, firewall rules, a source "
+            "IP address, Zero Trust sessions, or the overall security "
+            "operations summary."
+        )
+
+    return {
+        "answer": answer,
+        "threat": threat_context()
     }
 
 
@@ -1325,6 +2850,91 @@ def recent_threats(
         for t in threats
     ]
 
+
+
+
+@app.get("/api/threats/timeline")
+def threat_timeline(
+    hours: int = 24,
+    severity: Optional[str] = None,
+    include_test: bool = True,
+    source_ip: Optional[str] = None,
+    db: Session = Depends(get_db)
+):
+    if hours not in (1, 24, 168):
+        raise HTTPException(
+            status_code=400,
+            detail="hours must be 1, 24, or 168"
+        )
+
+    allowed_severities = {"CRITICAL", "HIGH", "MEDIUM", "LOW"}
+
+    if severity:
+        severity = severity.strip().upper()
+        if severity not in allowed_severities:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid severity filter"
+            )
+
+    cutoff = datetime.utcnow() - timedelta(hours=hours)
+
+    query = db.query(Threat).filter(
+        Threat.created_at >= cutoff
+    )
+
+    if severity:
+        query = query.filter(Threat.severity == severity)
+
+    if source_ip:
+        source_ip = source_ip.strip()
+        if len(source_ip) > 64:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid source IP filter"
+            )
+        query = query.filter(Threat.source_ip == source_ip)
+
+    records = query.order_by(Threat.created_at.desc()).all()
+
+    events = []
+
+    for threat in records:
+        threat_name = (threat.threat_type or "").upper()
+
+        is_test = any(
+            marker in threat_name
+            for marker in ("TEST", "SIMULATION", "STAGE_")
+        )
+
+        if not include_test and is_test:
+            continue
+
+        events.append({
+            "id": threat.id,
+            "threat_type": threat.threat_type,
+            "source_ip": threat.source_ip,
+            "destination_ip": threat.destination_ip,
+            "port": threat.port,
+            "protocol": threat.protocol,
+            "risk_score": threat.risk_score,
+            "severity": threat.severity,
+            "action": threat.action,
+            "status": threat.status,
+            "created_at": (
+                threat.created_at.isoformat()
+                if threat.created_at else None
+            ),
+            "is_test": is_test
+        })
+
+    return {
+        "time_range_hours": hours,
+        "severity_filter": severity or "ALL",
+        "include_test": include_test,
+        "total": len(events),
+        "events": events
+    }
 
 @app.get("/api/firewall/status")
 def firewall_status(db: Session = Depends(get_db)):
@@ -1508,92 +3118,422 @@ async def preview_dataset(file: UploadFile = File(...)):
 
 
 # =========================================================
-# OPT-IN DEVICE MONITORING (health telemetry + location)
-# Configure DEVICE_MONITOR_TOKEN in Render before use.
-# Reports are held in memory and reset when the service restarts.
+
+
+# DATASET LAB MODEL EVALUATION
+@app.post("/api/datasets/evaluate")
+async def evaluate_uploaded_dataset(
+    file: UploadFile = File(...),
+    label_column: Optional[str] = None,
+):
+    """Evaluate a labelled CSV on a bounded, held-out test split."""
+    import os
+    import tempfile
+
+    from dataset_evaluator import evaluate_dataset
+
+    filename = file.filename or "dataset.csv"
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Please upload a CSV file.")
+
+    temp_path = None
+    total_bytes = 0
+    max_bytes = 10 * 1024 * 1024 * 1024  # 100 MiB for model evaluation
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".csv", prefix="sentinelai_eval_", delete=False
+        ) as temp:
+            temp_path = temp.name
+
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Model evaluation supports CSV files up to 10 GiB.",
+                    )
+
+                temp.write(chunk)
+
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="The CSV file is empty.")
+
+        try:
+            result = evaluate_dataset(temp_path, label_column=label_column)
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (UnicodeDecodeError, pd.errors.ParserError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Could not read the CSV: {exc}"
+            ) from exc
+
+        result["filename"] = filename
+        return result
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+        await file.close()
+
+
+
 # =========================================================
+# DATASET INTELLIGENCE ENGINE
+# =========================================================
+
+@app.post("/api/datasets/intelligence")
+async def analyze_dataset_intelligence(file: UploadFile = File(...)):
+    """Profile an uploaded CSV across all rows using bounded-memory chunks."""
+    import os
+    import tempfile
+    from dataset_intelligence import profile_dataset
+
+    filename = file.filename or "dataset.csv"
+
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Please upload a CSV file.")
+
+    temp_path = None
+    total_bytes = 0
+    max_bytes = 10 * 1024 * 1024 * 1024
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".csv",
+            prefix="sentinelai_intelligence_", delete=False
+        ) as temp:
+            temp_path = temp.name
+
+            while True:
+                chunk = await file.read(8 * 1024 * 1024)
+                if not chunk:
+                    break
+
+                total_bytes += len(chunk)
+
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Dataset intelligence supports CSV files up to 10 GiB."
+                    )
+
+                temp.write(chunk)
+
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="The CSV file is empty.")
+
+        try:
+            result = profile_dataset(temp_path, chunksize=25_000)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (UnicodeDecodeError, pd.errors.ParserError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not read the CSV: {exc}"
+            ) from exc
+
+        result["filename"] = filename
+        result["file_size_bytes"] = total_bytes
+
+        return result
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+        await file.close()
+
+
+# PERSISTENT MULTI-DEVICE MONITORING
+# Health telemetry is stored in the database.
+# Physical location remains separately opt-in.
+# =========================================================
+
 import os as _device_monitor_os
 import hmac as _device_monitor_hmac
 from datetime import datetime as _device_monitor_datetime, timezone as _device_monitor_timezone
 
-_device_monitor_reports: dict[str, dict] = {}
-
 
 def _device_monitor_authorize(authorization: str | None) -> None:
     expected = _device_monitor_os.getenv("DEVICE_MONITOR_TOKEN", "").strip()
+
     if not expected:
         raise HTTPException(
             status_code=503,
             detail="Device monitoring is not configured. Set DEVICE_MONITOR_TOKEN on the backend.",
         )
+
     supplied = authorization or ""
     wanted = f"Bearer {expected}"
+
     if not _device_monitor_hmac.compare_digest(supplied, wanted):
         raise HTTPException(status_code=401, detail="Invalid device-monitor token.")
+
+
+def _device_monitor_number(value, default=None):
+    if value is None:
+        return default
+    try:
+        number = float(value)
+        if number != number or number in (float("inf"), float("-inf")):
+            return default
+        return number
+    except (TypeError, ValueError):
+        return default
+
+
+def _device_monitor_serialize(agent, telemetry=None):
+    last_seen = agent.last_seen
+    online = bool(
+        last_seen
+        and (_device_monitor_datetime.utcnow() - last_seen).total_seconds() < 45
+    )
+
+    location = None
+    if agent.latitude is not None and agent.longitude is not None:
+        location = {
+            "latitude": agent.latitude,
+            "longitude": agent.longitude,
+            "accuracy_m": agent.location_accuracy_m or 0,
+            "updated_at": (
+                agent.location_updated_at.replace(tzinfo=_device_monitor_timezone.utc).isoformat()
+                if agent.location_updated_at else None
+            ),
+        }
+
+    result = {
+        "device_id": agent.device_id,
+        "device_name": agent.device_name,
+        "platform": agent.platform,
+        "os_version": agent.os_version,
+        "local_ip": agent.local_ip,
+        "status": "ONLINE" if online else "OFFLINE",
+        "last_seen": (
+            last_seen.replace(tzinfo=_device_monitor_timezone.utc).isoformat()
+            if last_seen else None
+        ),
+        "location": location,
+    }
+
+    if telemetry:
+        result.update({
+            "cpu_percent": telemetry.cpu_percent,
+            "cpu_cores": telemetry.cpu_cores,
+            "memory_percent": telemetry.memory_percent,
+            "memory_used_gb": telemetry.memory_used_gb,
+            "memory_total_gb": telemetry.memory_total_gb,
+            "disk_percent": telemetry.disk_percent,
+            "battery_percent": telemetry.battery_percent,
+            "battery_power_plugged": (
+                bool(telemetry.battery_power_plugged)
+                if telemetry.battery_power_plugged is not None else None
+            ),
+            "network_sent_mb": telemetry.network_sent_mb,
+            "network_recv_mb": telemetry.network_recv_mb,
+            "captured_at": (
+                telemetry.captured_at.replace(tzinfo=_device_monitor_timezone.utc).isoformat()
+                if telemetry.captured_at else None
+            ),
+        })
+
+    return result
 
 
 @app.post("/api/device-monitor/report")
 def device_monitor_report(
     payload: dict,
     authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
 ):
     _device_monitor_authorize(authorization)
+
     device_id = str(payload.get("device_id", "")).strip()[:120]
     device_name = str(payload.get("device_name", "")).strip()[:160]
-    if not device_id or not device_name:
-        raise HTTPException(status_code=400, detail="device_id and device_name are required.")
 
-    now = _device_monitor_datetime.now(_device_monitor_timezone.utc).isoformat()
-    report = dict(_device_monitor_reports.get(device_id, {}))
-    # Keep the location object supplied separately by the consented browser watch.
-    report.update(payload)
-    report["device_id"] = device_id
-    report["device_name"] = device_name
-    report["last_seen"] = now
-    _device_monitor_reports[device_id] = report
-    return {"ok": True, "device_id": device_id, "last_seen": now}
+    if not device_id or not device_name:
+        raise HTTPException(
+            status_code=400,
+            detail="device_id and device_name are required.",
+        )
+
+    now = _device_monitor_datetime.utcnow()
+
+    try:
+        agent = (
+            db.query(DeviceAgent)
+            .filter(DeviceAgent.device_id == device_id)
+            .first()
+        )
+
+        if agent is None:
+            agent = DeviceAgent(
+                device_id=device_id,
+                device_name=device_name,
+                first_seen=now,
+            )
+            db.add(agent)
+
+        agent.device_name = device_name
+        agent.platform = str(payload.get("platform") or "Unknown")[:80]
+        agent.os_version = str(payload.get("os_version") or "")[:120]
+        agent.local_ip = str(payload.get("local_ip") or "")[:64]
+        agent.status = "ONLINE"
+        agent.last_seen = now
+
+        telemetry = DeviceTelemetry(
+            device_id=device_id,
+            cpu_percent=_device_monitor_number(payload.get("cpu_percent")),
+            cpu_cores=(
+                int(payload["cpu_cores"])
+                if str(payload.get("cpu_cores", "")).isdigit()
+                else None
+            ),
+            memory_percent=_device_monitor_number(payload.get("memory_percent")),
+            memory_used_gb=_device_monitor_number(payload.get("memory_used_gb")),
+            memory_total_gb=_device_monitor_number(payload.get("memory_total_gb")),
+            disk_percent=_device_monitor_number(payload.get("disk_percent")),
+            battery_percent=_device_monitor_number(payload.get("battery_percent")),
+            battery_power_plugged=(
+                int(bool(payload["battery_power_plugged"]))
+                if payload.get("battery_power_plugged") is not None else None
+            ),
+            network_sent_mb=_device_monitor_number(payload.get("network_sent_mb")),
+            network_recv_mb=_device_monitor_number(payload.get("network_recv_mb")),
+            captured_at=now,
+        )
+
+        db.add(telemetry)
+        db.commit()
+
+        return {
+            "ok": True,
+            "device_id": device_id,
+            "last_seen": now.replace(tzinfo=_device_monitor_timezone.utc).isoformat(),
+        }
+
+    except Exception:
+        db.rollback()
+        raise
 
 
 @app.post("/api/device-monitor/location")
 def device_monitor_location(
     payload: dict,
     authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
 ):
     _device_monitor_authorize(authorization)
+
     device_id = str(payload.get("device_id", "")).strip()[:120]
-    report = _device_monitor_reports.get(device_id)
-    if not device_id or report is None:
-        raise HTTPException(status_code=404, detail="Start the laptop monitor agent first, then try location sharing again.")
+
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id is required.")
+
+    agent = (
+        db.query(DeviceAgent)
+        .filter(DeviceAgent.device_id == device_id)
+        .first()
+    )
+
+    if agent is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Start the laptop monitor agent first, then try location sharing again.",
+        )
 
     try:
         latitude = float(payload.get("latitude"))
         longitude = float(payload.get("longitude"))
         accuracy = float(payload.get("accuracy_m", 0))
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="Valid latitude, longitude, and accuracy are required.")
+        raise HTTPException(
+            status_code=400,
+            detail="Valid latitude, longitude, and accuracy are required.",
+        )
+
     if not (-90 <= latitude <= 90 and -180 <= longitude <= 180):
         raise HTTPException(status_code=400, detail="Location coordinates are out of range.")
 
-    now = _device_monitor_datetime.now(_device_monitor_timezone.utc).isoformat()
-    report["location"] = {
-        "latitude": latitude,
-        "longitude": longitude,
-        "accuracy_m": max(0, accuracy),
-        "updated_at": now,
+    if accuracy < 0 or accuracy != accuracy or accuracy == float("inf"):
+        raise HTTPException(status_code=400, detail="Location accuracy is invalid.")
+
+    now = _device_monitor_datetime.utcnow()
+
+    agent.latitude = latitude
+    agent.longitude = longitude
+    agent.location_accuracy_m = accuracy
+    agent.location_updated_at = now
+
+    db.commit()
+
+    return {
+        "ok": True,
+        "location_updated_at": now.replace(
+            tzinfo=_device_monitor_timezone.utc
+        ).isoformat(),
     }
-    return {"ok": True, "location_updated_at": now}
 
 
 @app.get("/api/device-monitor/latest")
-def device_monitor_latest(authorization: str | None = Header(default=None)):
+def device_monitor_latest(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
     _device_monitor_authorize(authorization)
-    if not _device_monitor_reports:
-        return {"device": None, "message": "No laptop agent has reported yet."}
-    latest = max(
-        _device_monitor_reports.values(),
-        key=lambda item: item.get("last_seen", ""),
+
+    agent = (
+        db.query(DeviceAgent)
+        .order_by(DeviceAgent.last_seen.desc())
+        .first()
     )
-    return {"device": latest}
+
+    if agent is None:
+        return {"device": None, "message": "No laptop agent has reported yet."}
+
+    telemetry = (
+        db.query(DeviceTelemetry)
+        .filter(DeviceTelemetry.device_id == agent.device_id)
+        .order_by(DeviceTelemetry.captured_at.desc())
+        .first()
+    )
+
+    return {"device": _device_monitor_serialize(agent, telemetry)}
+
+
+@app.get("/api/device-monitor/devices")
+def device_monitor_devices(
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    _device_monitor_authorize(authorization)
+
+    agents = (
+        db.query(DeviceAgent)
+        .order_by(DeviceAgent.last_seen.desc())
+        .all()
+    )
+
+    devices = []
+
+    for agent in agents:
+        telemetry = (
+            db.query(DeviceTelemetry)
+            .filter(DeviceTelemetry.device_id == agent.device_id)
+            .order_by(DeviceTelemetry.captured_at.desc())
+            .first()
+        )
+        devices.append(_device_monitor_serialize(agent, telemetry))
+
+    return {
+        "devices": devices,
+        "total": len(devices),
+        "online": sum(1 for item in devices if item["status"] == "ONLINE"),
+        "offline": sum(1 for item in devices if item["status"] == "OFFLINE"),
+    }
 
 
 # Local system telemetry. Run this backend on the Mac being monitored.
@@ -1609,22 +3549,44 @@ def live_system_telemetry():
         disk = psutil.disk_usage("/")
         network = psutil.net_io_counters()
         connections = []
+        restricted_processes = 0
 
-        try:
-            for conn in psutil.net_connections(kind="inet")[:100]:
-                local = conn.laddr
-                remote = conn.raddr
-                connections.append({
-                    "status": conn.status,
-                    "local_ip": local.ip if local else None,
-                    "local_port": local.port if local else None,
-                    "remote_ip": remote.ip if remote else None,
-                    "remote_port": remote.port if remote else None,
-                    "pid": conn.pid,
-                })
-            connection_access = "available"
-        except (psutil.AccessDenied, OSError):
-            connection_access = "permission_limited"
+        for process in psutil.process_iter(["pid"]):
+            try:
+                for conn in process.connections(kind="inet"):
+                    local = conn.laddr
+                    remote = conn.raddr
+
+                    connections.append({
+                        "status": conn.status,
+                        "protocol": (
+                            "TCP" if conn.type == 1
+                            else "UDP" if conn.type == 2
+                            else "OTHER"
+                        ),
+                        "local_ip": local.ip if local else None,
+                        "local_port": local.port if local else None,
+                        "remote_ip": remote.ip if remote else None,
+                        "remote_port": remote.port if remote else None,
+                        "pid": process.pid,
+                    })
+
+                    if len(connections) >= 100:
+                        break
+
+            except psutil.AccessDenied:
+                restricted_processes += 1
+            except (psutil.NoSuchProcess, psutil.ZombieProcess):
+                continue
+            except OSError:
+                restricted_processes += 1
+
+            if len(connections) >= 100:
+                break
+
+        connection_access = (
+            "permission_limited" if restricted_processes else "available"
+        )
 
         interfaces = {}
         for name, addresses in psutil.net_if_addrs().items():
@@ -1665,6 +3627,7 @@ def live_system_telemetry():
             "network_interfaces": interfaces,
             "connections": connections,
             "connection_access": connection_access,
+            "restricted_processes": restricted_processes,
             "note": (
                 "Live operating-system telemetry, not proof of an attack. "
                 "Connection visibility may be limited by macOS permissions."
@@ -1675,3 +3638,40 @@ def live_system_telemetry():
             status_code=500,
             detail=f"Unable to collect system telemetry: {type(exc).__name__}",
         )
+
+
+@app.post("/api/auth/logout")
+def admin_logout(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+    admin: dict = Depends(get_current_admin),
+):
+    if credentials is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    token_hash = hashlib.sha256(
+        credentials.credentials.encode("utf-8")
+    ).hexdigest()
+
+    db = SessionLocal()
+    try:
+        db.add(
+            RevokedToken(
+                token_hash=token_hash,
+                expires_at=admin["exp"],
+            )
+        )
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Could not complete server-side logout",
+        )
+    finally:
+        db.close()
+
+    return {"message": "Logged out successfully"}
+
+
+# SentinelAI read-only network topology API
+app.include_router(network_topology_router)

@@ -1,4 +1,5 @@
 import { API_BASE as API } from "../api";
+import { detectBlockSpike } from "../utils/blockSpikeDetector";
 import PageLayout from "../components/PageLayout";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -40,8 +41,14 @@ export default function Analytics() {
   const [data, setData] = useState(null);
   const [score, setScore] = useState(null);
   const [logs, setLogs] = useState([]);
+  const [firewallAnalytics, setFirewallAnalytics] = useState(null);
+  const [firewallAnalyticsError, setFirewallAnalyticsError] = useState("");
   const [activeBlocks, setActiveBlocks] = useState([]);
   const [incidents, setIncidents] = useState([]);
+  const [blockSpikeAlerts, setBlockSpikeAlerts] = useState([]);
+  const [blockSpikeAlertError, setBlockSpikeAlertError] = useState("");
+  const [acknowledgingAlertId, setAcknowledgingAlertId] = useState(null);
+
   const [selectedSourceIp, setSelectedSourceIp] = useState("");
   const [actionFilter, setActionFilter] = useState("ALL");
   const [severityFilter, setSeverityFilter] = useState("ALL");
@@ -70,17 +77,68 @@ export default function Analytics() {
 
       setData(analytics);
       setScore(securityScore);
+      const adminToken = sessionStorage.getItem("sentinelai_admin_token");
+      const firewallAnalyticsResult = await fetch(`${API}/api/firewall/analytics`, {
+        headers: adminToken
+          ? { Authorization: `Bearer ${adminToken}` }
+          : {},
+      }).then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Firewall analytics request failed (${response.status})`);
+        }
+        return response.json();
+      }).then((result) => {
+        setFirewallAnalytics(result);
+        setFirewallAnalyticsError("");
+      }).catch((err) => {
+        console.error("Firewall analytics:", err);
+        setFirewallAnalyticsError(err.message || "Unable to load firewall decision analytics.");
+      });
+
+      const adminHeaders = adminToken
+        ? { Authorization: `Bearer ${adminToken}` }
+        : {};
+
+      try {
+        const alertsResponse = await fetch(
+          `${API}/api/analytics/block-spike-alerts`,
+          { headers: adminHeaders }
+        );
+
+        if (!alertsResponse.ok) {
+          throw new Error(`BLOCK spike alerts request failed (${alertsResponse.status})`);
+        }
+
+        const alertsResult = await alertsResponse.json();
+
+        setBlockSpikeAlerts(
+          Array.isArray(alertsResult.alerts) ? alertsResult.alerts : []
+        );
+        setBlockSpikeAlertError("");
+      } catch (alertError) {
+        console.error("BLOCK spike alerts:", alertError);
+        setBlockSpikeAlertError(
+          alertError.message || "Unable to load persistent BLOCK spike alerts."
+        );
+      }
+
       const [logsResult, blocksResult, incidentsResult] = await Promise.allSettled([
-        fetch(`${API}/api/logs`).then((r) => {
-          if (!r.ok) throw new Error("Audit log request failed");
+        fetch(`${API}/api/logs`, {
+          headers: adminHeaders,
+        }).then((r) => {
+          if (!r.ok) throw new Error(`Audit log request failed (${r.status})`);
           return r.json();
         }),
-        fetch(`${API}/api/firewall/blocks`).then((r) => {
-          if (!r.ok) throw new Error("Temporary block request failed");
+        fetch(`${API}/api/firewall/blocks`, {
+          headers: adminHeaders,
+        }).then((r) => {
+          if (!r.ok) throw new Error(`Temporary block request failed (${r.status})`);
           return r.json();
         }),
-        fetch(`${API}/api/incidents`).then((r) => {
-          if (!r.ok) throw new Error("Incident request failed");
+        fetch(`${API}/api/incidents`, {
+          headers: adminHeaders,
+        }).then((r) => {
+          if (!r.ok) throw new Error(`Incident request failed (${r.status})`);
           return r.json();
         }),
       ]);
@@ -115,6 +173,45 @@ export default function Analytics() {
     return () => clearInterval(interval);
   }, []);
 
+
+  const acknowledgeBlockSpikeAlert = async (alertId) => {
+    const adminToken = sessionStorage.getItem("sentinelai_admin_token");
+
+    if (!adminToken) {
+      setBlockSpikeAlertError("Admin login required to acknowledge alerts.");
+      return;
+    }
+
+    try {
+      setAcknowledgingAlertId(alertId);
+
+      const response = await fetch(
+        `${API}/api/analytics/block-spike-alerts/${alertId}/acknowledge`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${adminToken}` },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Acknowledgement failed (${response.status})`);
+      }
+
+      setBlockSpikeAlerts(previous =>
+        previous.map(alert =>
+          alert.id === alertId
+            ? { ...alert, status: "ACKNOWLEDGED" }
+            : alert
+        )
+      );
+      setBlockSpikeAlertError("");
+    } catch (err) {
+      setBlockSpikeAlertError(err.message || "Unable to acknowledge alert.");
+    } finally {
+      setAcknowledgingAlertId(null);
+    }
+  };
+
   const severity = data?.severity || {};
 
   const maxSeverity = Math.max(
@@ -138,6 +235,16 @@ export default function Analytics() {
 
   const blockedLogCount = logs.filter(isBlockedEvent).length;
   const allowedLogCount = logs.filter(isAllowedEvent).length;
+  const mfaLogCount = logs.filter(
+    (item) => String(item.action || "").toUpperCase() === "MFA"
+  ).length;
+  const monitorLogCount = logs.filter(
+    (item) => String(item.action || "").toUpperCase() === "MONITOR"
+  ).length;
+  const otherLogCount = logs.filter((item) => {
+    const action = String(item.action || "").toUpperCase();
+    return !isBlockedEvent(item) && !["ALLOW", "MFA", "MONITOR"].includes(action);
+  }).length;
   const recordedBlockRate = logs.length
     ? Math.round((blockedLogCount / logs.length) * 100)
     : 0;
@@ -386,14 +493,15 @@ export default function Analytics() {
             minWidth: 0
           }}>
             <h2 style={{ margin: "0 0 8px", fontSize: "18px" }}>
-              <Activity size={19} color="#00D4FF" /> Threat Activity
+              <Activity size={19} color="#00D4FF" /> Firewall Response Trends
             </h2>
             <p style={{ color: "#64748B", fontSize: "12px" }}>
-              Recorded ALLOW and BLOCK events over the last six hours.
+              Recorded ALLOW, BLOCK and MONITOR decisions over the latest six-hour window.
             </p>
             <div style={{ display: "flex", gap: "16px", fontSize: "12px", margin: "16px 0" }}>
               <span style={{ color: "#34D399" }}>● ALLOW</span>
               <span style={{ color: "#F87171" }}>● BLOCK</span>
+              <span style={{ color: "#A78BFA" }}>● MONITOR</span>
             </div>
             <div style={{ display: "grid", gap: "14px" }}>
               {(() => {
@@ -403,7 +511,12 @@ export default function Analytics() {
                     timestamp: new Date(item.created_at)
                   }))
                   .filter(({ timestamp }) => !Number.isNaN(timestamp.getTime()))
-                  .filter(({ item }) => isAllowedEvent(item) || isBlockedEvent(item))
+                  .filter(({ item }) =>
+                    isAllowedEvent(item) ||
+                    isBlockedEvent(item) ||
+                    String(item.action || "").toUpperCase() === "MONITOR" ||
+                    String(item.event_type || "").toUpperCase().includes("MONITOR")
+                  )
                   .sort((a, b) => a.timestamp - b.timestamp);
 
                 const latestTimestamp = validEvents.length
@@ -450,19 +563,24 @@ export default function Analytics() {
                   return {
                     start,
                     allowed: events.filter(({ item }) => isAllowedEvent(item)).length,
-                    blocked: events.filter(({ item }) => isBlockedEvent(item)).length
+                    blocked: events.filter(({ item }) => isBlockedEvent(item)).length,
+                    monitored: events.filter(({ item }) =>
+                      String(item.action || "").toUpperCase() === "MONITOR" ||
+                      String(item.event_type || "").toUpperCase().includes("MONITOR")
+                    ).length
                   };
                 });
 
                 const maxCount = Math.max(
                   1,
-                  ...buckets.map((bucket) => bucket.allowed + bucket.blocked)
+                  ...buckets.map((bucket) => bucket.allowed + bucket.blocked + bucket.monitored)
                 );
 
                 return buckets.map((bucket) => {
-                  const total = bucket.allowed + bucket.blocked;
+                  const total = bucket.allowed + bucket.blocked + bucket.monitored;
                   const allowedWidth = bucket.allowed / maxCount * 100;
                   const blockedWidth = bucket.blocked / maxCount * 100;
+                  const monitoredWidth = bucket.monitored / maxCount * 100;
 
                   return (
                     <div key={bucket.start.toISOString()}>
@@ -507,6 +625,13 @@ export default function Analytics() {
                             background: "#F87171"
                           }}
                         />
+                        <div
+                          title={`MONITOR ${bucket.monitored}`}
+                          style={{
+                            width: `${monitoredWidth}%`,
+                            background: "#A78BFA"
+                          }}
+                        />
                       </div>
                     </div>
                   );
@@ -516,7 +641,280 @@ export default function Analytics() {
             <p style={{ color: "#64748B", fontSize: "11px", marginBottom: 0 }}>
               From the {logs.length} audit records currently returned by the API.
             </p>
-          </section>
+
+            {/* Automatic BLOCK Spike Detection */}
+            {(() => {
+              const {
+                status,
+                enoughData,
+                latestBlocks,
+                baseline,
+                threshold,
+                spikeDetected,
+                criticalSpike
+              } = detectBlockSpike(logs, isBlockedEvent);
+
+              const statusColor = !enoughData
+                ? "#94A3B8"
+                : criticalSpike
+                  ? "#FB7185"
+                  : spikeDetected
+                    ? "#FBBF24"
+                    : "#4ADE80";
+
+              return (
+                <div style={{
+                  marginTop: "20px",
+                  padding: "16px",
+                  background: "#0B1120",
+                  border: `1px solid ${statusColor}55`,
+                  borderRadius: "10px",
+                }}>
+                  <div style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "10px",
+                    flexWrap: "wrap",
+                  }}>
+                    <h3 style={{
+                      margin: 0,
+                      fontSize: "14px",
+                      color: "#CBD5E1",
+                    }}>
+                      <Activity size={17} color="#00D4FF" /> Automatic BLOCK Spike Detection
+                    </h3>
+                    <span style={{
+                      color: statusColor,
+                      fontSize: "11px",
+                      fontWeight: 900,
+                      padding: "6px 9px",
+                      border: `1px solid ${statusColor}66`,
+                      borderRadius: "20px",
+                    }}>
+                      {status}
+                    </span>
+                  </div>
+
+                  {enoughData ? (
+                    <>
+                      <div style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))",
+                        gap: "10px",
+                        marginTop: "15px",
+                      }}>
+                        <div>
+                          <div style={{ color: "#64748B", fontSize: "11px" }}>
+                            Latest hourly BLOCKs
+                          </div>
+                          <strong style={{
+                            display: "block",
+                            color: "#F87171",
+                            fontSize: "23px",
+                            marginTop: "5px",
+                          }}>
+                            {latestBlocks}
+                          </strong>
+                        </div>
+                        <div>
+                          <div style={{ color: "#64748B", fontSize: "11px" }}>
+                            Previous 5-hour average
+                          </div>
+                          <strong style={{
+                            display: "block",
+                            color: "#CBD5E1",
+                            fontSize: "23px",
+                            marginTop: "5px",
+                          }}>
+                            {baseline.toFixed(2)}
+                          </strong>
+                        </div>
+                        <div>
+                          <div style={{ color: "#64748B", fontSize: "11px" }}>
+                            Detection threshold
+                          </div>
+                          <strong style={{
+                            display: "block",
+                            color: "#FBBF24",
+                            fontSize: "23px",
+                            marginTop: "5px",
+                          }}>
+                            {threshold.toFixed(1)}
+                          </strong>
+                        </div>
+                      </div>
+
+                      <p style={{
+                        color: "#94A3B8",
+                        fontSize: "12px",
+                        lineHeight: 1.6,
+                        margin: "14px 0 0",
+                      }}>
+                        {criticalSpike
+                          ? "Critical activity detected. Review the latest BLOCK events, source IPs and triggered firewall rules."
+                          : spikeDetected
+                            ? "BLOCK activity is elevated. Review the latest recorded events and investigate their sources."
+                            : "No BLOCK spike meets the configured threshold in the latest hour. Continue monitoring recorded activity."}
+                      </p>
+                    </>
+                  ) : (
+                    <p style={{
+                      color: "#94A3B8",
+                      fontSize: "12px",
+                      lineHeight: 1.6,
+                      margin: "14px 0 0",
+                    }}>
+                      Audit records must span the full six-hour window.
+                      The detector will not treat missing historical coverage as zero activity.
+                    </p>
+                  )}
+
+                  <p style={{
+                    color: "#64748B",
+                    fontSize: "10px",
+                    lineHeight: 1.5,
+                    margin: "12px 0 0",
+                  }}>
+                    Statistical rule: latest hourly BLOCK count must be at least 3
+                    and at least 2× the previous five-hour average. CRITICAL requires
+                    at least 6 BLOCK events and 3× the baseline, or 6 events when
+                    the baseline is zero. Based only on the
+                    latest 100 audit records returned by the API. This is an
+                    analyst alert, not an automatic firewall action.
+                  </p>
+                </div>
+              );
+            })()}
+
+            {/* Persistent BLOCK Spike Alert History */}
+            <div style={{
+              marginTop: "16px",
+              padding: "16px",
+              background: "#0B1120",
+              border: "1px solid #1E293B",
+              borderRadius: "10px",
+            }}>
+              <div style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "10px",
+                marginBottom: "14px",
+              }}>
+                <h3 style={{ margin: 0, color: "#CBD5E1", fontSize: "14px" }}>
+                  Persistent BLOCK Spike Alerts
+                </h3>
+                <span style={{ color: "#94A3B8", fontSize: "11px" }}>
+                  {blockSpikeAlerts.length} saved alerts
+                </span>
+              </div>
+
+              {blockSpikeAlertError && (
+                <p style={{ color: "#F87171", fontSize: "12px" }}>
+                  {blockSpikeAlertError}
+                </p>
+              )}
+
+              {blockSpikeAlerts.length === 0 ? (
+                <p style={{ color: "#94A3B8", fontSize: "12px", margin: 0 }}>
+                  No persistent BLOCK spike alerts recorded yet.
+                </p>
+              ) : (
+                <div style={{ display: "grid", gap: "10px" }}>
+                  {blockSpikeAlerts.map(alert => {
+                    const critical = alert.severity === "CRITICAL";
+                    const color = critical ? "#FB7185" : "#FBBF24";
+                    const acknowledged = alert.status === "ACKNOWLEDGED";
+
+                    return (
+                      <div key={alert.id} style={{
+                        padding: "12px",
+                        border: "1px solid #334155",
+                        borderRadius: "8px",
+                        background: "#111827",
+                      }}>
+                        <div style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          flexWrap: "wrap",
+                          gap: "8px",
+                        }}>
+                          <strong style={{ color, fontSize: "12px" }}>
+                            {alert.severity} SPIKE
+                          </strong>
+                          <span style={{
+                            color: acknowledged ? "#4ADE80" : "#FBBF24",
+                            fontSize: "10px",
+                            fontWeight: 800,
+                          }}>
+                            {alert.status}
+                          </span>
+                        </div>
+
+                        <div style={{
+                          color: "#CBD5E1",
+                          fontSize: "12px",
+                          marginTop: "8px",
+                          lineHeight: 1.7,
+                        }}>
+                          BLOCK events: {alert.latest_block_count}
+                          {" | "}
+                          Baseline: {Number(alert.baseline_average).toFixed(2)}
+                          {" | "}
+                          Threshold: {Number(alert.detection_threshold).toFixed(1)}
+                        </div>
+
+                        <div style={{
+                          color: "#64748B",
+                          fontSize: "10px",
+                          marginTop: "5px",
+                        }}>
+                          Detected: {alert.detected_at
+                            ? new Date(alert.detected_at).toLocaleString()
+                            : "Unknown"}
+                        </div>
+
+                        {acknowledged ? (
+                          <div style={{
+                            color: "#64748B",
+                            fontSize: "10px",
+                            marginTop: "4px",
+                          }}>
+                            Acknowledged by: {alert.acknowledged_by || "Admin"}
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={acknowledgingAlertId === alert.id}
+                            onClick={() => acknowledgeBlockSpikeAlert(alert.id)}
+                            style={{
+                              marginTop: "10px",
+                              padding: "7px 12px",
+                              borderRadius: "6px",
+                              border: "1px solid #00D4FF66",
+                              background: "#0E2938",
+                              color: "#67E8F9",
+                              fontSize: "11px",
+                              fontWeight: 700,
+                              cursor: "pointer",
+                              opacity: acknowledgingAlertId === alert.id ? 0.6 : 1,
+                            }}
+                          >
+                            {acknowledgingAlertId === alert.id
+                              ? "Acknowledging..."
+                              : "Acknowledge"}
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+</section>
 
           <section style={{
             background: "#111827",
@@ -1122,6 +1520,9 @@ export default function Analytics() {
             {[
               { label: "Allowed", value: allowedLogCount, color: "#22C55E" },
               { label: "Blocked", value: blockedLogCount, color: "#EF4444" },
+              { label: "MFA", value: mfaLogCount, color: "#FBBF24" },
+              { label: "Monitor", value: monitorLogCount, color: "#A78BFA" },
+              { label: "Other", value: otherLogCount, color: "#94A3B8" },
             ].map((item) => (
               <div key={item.label} style={{ marginBottom: "14px" }}>
                 <div style={{
@@ -1151,6 +1552,342 @@ export default function Analytics() {
               </div>
             ))}
           </div>
+        </section>
+
+
+        {/* Firewall Response Intelligence */}
+        <section style={{
+          background: "#111827",
+          border: "1px solid #1E293B",
+          borderRadius: "14px",
+          padding: "23px",
+          marginBottom: "20px",
+        }}>
+          {(() => {
+            const actions = firewallAnalytics?.actions || {};
+            const severities = firewallAnalytics?.severities || {};
+            const sources = firewallAnalytics?.top_sources || [];
+            const rules = firewallAnalytics?.top_rules || [];
+            const attribution = firewallAnalytics?.source_attribution || {};
+            const total = Number(firewallAnalytics?.total_decisions || 0);
+            const identifiedSourceCount = Number(attribution.identified || 0);
+            const unknownSources = Number(attribution.unknown || 0);
+            const blockRate = total ? (Number(actions.BLOCK || 0) / total) * 100 : 0;
+            const allowRate = total ? (Number(actions.ALLOW || 0) / total) * 100 : 0;
+            const monitorRate = total ? (Number(actions.MONITOR || 0) / total) * 100 : 0;
+            const attributionRate = Number(attribution.identified_percentage || 0);
+            const scorecardMetrics = [
+              { label: "Decision Volume", value: total, suffix: "decisions", color: "#67E8F9", detail: "Recorded firewall decisions" },
+              { label: "BLOCK Rate", value: blockRate.toFixed(1), suffix: "%", color: "#F87171", detail: `${actions.BLOCK || 0} BLOCK decisions` },
+              { label: "ALLOW Rate", value: allowRate.toFixed(1), suffix: "%", color: "#4ADE80", detail: `${actions.ALLOW || 0} ALLOW decisions` },
+              { label: "MONITOR Rate", value: monitorRate.toFixed(1), suffix: "%", color: "#A78BFA", detail: `${actions.MONITOR || 0} MONITOR decisions` },
+              { label: "Source Attribution", value: attributionRate.toFixed(1), suffix: "%", color: "#FBBF24", detail: `${identifiedSourceCount} identified / ${unknownSources} unknown` },
+            ];
+            const actionEntries = [
+              { label: "ALLOW", value: Number(actions.ALLOW || 0), color: "#4ADE80" },
+              { label: "BLOCK", value: Number(actions.BLOCK || 0), color: "#F87171" },
+              { label: "MONITOR", value: Number(actions.MONITOR || 0), color: "#A78BFA" },
+              { label: "OTHER", value: Number(actions.OTHER || 0), color: "#94A3B8" },
+            ];
+            const maxAction = Math.max(1, ...actionEntries.map(item => item.value));
+            const unknownSource = sources.find(item =>
+              !item.source_ip || item.source_ip === "Unknown"
+            );
+            const identifiedSources = sources.filter(item =>
+              item.source_ip && item.source_ip !== "Unknown"
+            );
+            const unknownHits = Number(unknownSource?.hits || 0);
+            const sourceCoverage = total
+              ? Math.max(0, total - unknownHits)
+              : 0;
+
+            return (
+              <>
+                <div style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  gap: "12px",
+                  flexWrap: "wrap",
+                }}>
+                  <div>
+                    <h2 style={{ margin: 0, fontSize: "19px" }}>
+                      <Activity color="#00D4FF" size={20} /> Firewall Response Intelligence
+                    </h2>
+                    <p style={{ color: "#64748B", fontSize: "13px", marginTop: "6px" }}>
+                      Live breakdown of recorded firewall decisions and response activity.
+                    </p>
+                  </div>
+                  <div style={{
+                    padding: "7px 11px",
+                    borderRadius: "99px",
+                    border: "1px solid #164E63",
+                    color: "#67E8F9",
+                    fontSize: "12px",
+                    fontWeight: 800,
+                  }}>
+                    {total} RECORDED DECISIONS
+                  </div>
+                </div>
+
+                {firewallAnalyticsError ? (
+                  <div style={{
+                    marginTop: "16px",
+                    padding: "13px",
+                    borderRadius: "9px",
+                    background: "#2A1720",
+                    color: "#FCA5A5",
+                    fontSize: "13px",
+                  }}>
+                    Firewall analytics could not be loaded: {firewallAnalyticsError}
+                  </div>
+                ) : !firewallAnalytics ? (
+                  <div style={{ color: "#94A3B8", marginTop: "18px", fontSize: "13px" }}>
+                    Waiting for firewall analytics data...
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ marginTop: "22px" }}>
+                      <h3 style={{ color: "#CBD5E1", fontSize: "15px", margin: "0 0 12px" }}>
+                        Response Effectiveness Scorecard
+                      </h3>
+                      <div style={{
+                        display: "grid",
+                        gridTemplateColumns: "repeat(auto-fit,minmax(155px,1fr))",
+                        gap: "12px",
+                      }}>
+                        {scorecardMetrics.map(item => (
+                          <div key={item.label} style={{
+                            background: "#0B1120",
+                            border: "1px solid #263449",
+                            borderRadius: "10px",
+                            padding: "15px",
+                          }}>
+                            <div style={{ color: "#94A3B8", fontSize: "12px" }}>
+                              {item.label}
+                            </div>
+                            <div style={{
+                              color: item.color,
+                              fontSize: "25px",
+                              fontWeight: 900,
+                              marginTop: "7px",
+                            }}>
+                              {item.value}{item.suffix === "%" ? "%" : ""}
+                            </div>
+                            <div style={{
+                              color: "#64748B",
+                              fontSize: "11px",
+                              marginTop: "5px",
+                            }}>
+                              {item.detail}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <p style={{
+                        color: "#64748B",
+                        fontSize: "11px",
+                        lineHeight: 1.5,
+                        marginTop: "10px",
+                      }}>
+                        Rates are calculated from recorded firewall decisions. They describe
+                        decision distribution and source attribution, not verified security
+                        effectiveness or actual network enforcement.
+                      </p>
+                    </div>
+
+                    <div style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))",
+                      gap: "12px",
+                      marginTop: "18px",
+                    }}>
+                      {actionEntries.map(item => (
+                        <div key={item.label} style={{
+                          background: "#0B1120",
+                          border: "1px solid #263449",
+                          borderRadius: "10px",
+                          padding: "15px",
+                        }}>
+                          <div style={{ color: "#94A3B8", fontSize: "12px" }}>
+                            {item.label} decisions
+                          </div>
+                          <div style={{
+                            color: item.color,
+                            fontSize: "26px",
+                            fontWeight: 900,
+                            marginTop: "6px",
+                          }}>
+                            {item.value}
+                          </div>
+                          <div style={{ color: "#64748B", fontSize: "11px", marginTop: "4px" }}>
+                            {total ? ((item.value / total) * 100).toFixed(1) : "0.0"}% of decisions
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit,minmax(min(100%,280px),1fr))",
+                      gap: "20px",
+                      marginTop: "24px",
+                    }}>
+                      <div>
+                        <h3 style={{ color: "#CBD5E1", fontSize: "14px", margin: "0 0 15px" }}>
+                          Decision Distribution
+                        </h3>
+                        {actionEntries.map(item => (
+                          <div key={item.label} style={{ marginBottom: "14px" }}>
+                            <div style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              color: "#94A3B8",
+                              fontSize: "12px",
+                              marginBottom: "6px",
+                            }}>
+                              <span>{item.label}</span>
+                              <strong style={{ color: item.color }}>{item.value}</strong>
+                            </div>
+                            <div style={{
+                              height: "9px",
+                              background: "#263449",
+                              borderRadius: "99px",
+                              overflow: "hidden",
+                            }}>
+                              <div style={{
+                                height: "100%",
+                                width: `${(item.value / maxAction) * 100}%`,
+                                background: item.color,
+                                borderRadius: "99px",
+                              }} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div>
+                        <h3 style={{ color: "#CBD5E1", fontSize: "14px", margin: "0 0 15px" }}>
+                          Recorded Severity Breakdown
+                        </h3>
+                        {Object.entries(severities).length === 0 ? (
+                          <p style={{ color: "#64748B", fontSize: "12px" }}>
+                            No severity records available.
+                          </p>
+                        ) : Object.entries(severities).map(([severity, count]) => (
+                          <div key={severity} style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            padding: "11px 12px",
+                            marginBottom: "8px",
+                            background: "#0B1120",
+                            border: "1px solid #263449",
+                            borderRadius: "8px",
+                            color: "#CBD5E1",
+                            fontSize: "13px",
+                          }}>
+                            <span>{severity}</span>
+                            <strong>{count}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit,minmax(min(100%,280px),1fr))",
+                      gap: "20px",
+                      marginTop: "18px",
+                    }}>
+                      <div>
+                        <h3 style={{ color: "#CBD5E1", fontSize: "14px" }}>
+                          Top Recorded Source IPs
+                        </h3>
+                        {identifiedSources.length === 0 ? (
+                          <p style={{ color: "#64748B", fontSize: "12px" }}>
+                            No identifiable source IPs in this sample.
+                          </p>
+                        ) : identifiedSources.slice(0, 5).map((item, index) => (
+                          <div key={item.source_ip} style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            padding: "10px",
+                            marginBottom: "7px",
+                            background: "#0B1120",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            gap: "10px",
+                          }}>
+                            <span style={{ color: "#CBD5E1" }}>
+                              {index + 1}. {item.source_ip}
+                            </span>
+                            <strong style={{ color: "#F87171" }}>{item.hits} hits</strong>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div>
+                        <h3 style={{ color: "#CBD5E1", fontSize: "14px" }}>
+                          Most Triggered Firewall Rules
+                        </h3>
+                        {rules.length === 0 ? (
+                          <p style={{ color: "#64748B", fontSize: "12px" }}>
+                            No firewall rule statistics available.
+                          </p>
+                        ) : rules.slice(0, 5).map(item => (
+                          <div key={item.rule} style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            padding: "10px",
+                            marginBottom: "7px",
+                            background: "#0B1120",
+                            borderRadius: "8px",
+                            fontSize: "12px",
+                            gap: "10px",
+                          }}>
+                            <span style={{ color: "#CBD5E1" }}>{item.rule}</span>
+                            <strong style={{ color: "#67E8F9" }}>{item.hits} hits</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div style={{
+                      marginTop: "18px",
+                      padding: "13px",
+                      background: "#241D12",
+                      border: "1px solid #854D0E",
+                      borderRadius: "9px",
+                      color: "#FDE68A",
+                      fontSize: "12px",
+                      lineHeight: 1.6,
+                    }}>
+                      <strong>Source IP data quality:</strong> {unknownHits} of {total} recorded
+                      decisions have an Unknown source IP. {sourceCoverage} decisions have
+                      identifiable source information in the returned top-source data.
+                    </div>
+
+                    {firewallAnalytics.simulation_mode && (
+                      <div style={{
+                        marginTop: "12px",
+                        padding: "12px",
+                        background: "#172033",
+                        border: "1px solid #334155",
+                        borderRadius: "9px",
+                        color: "#93C5FD",
+                        fontSize: "12px",
+                        lineHeight: 1.6,
+                      }}>
+                        Simulation mode is enabled. These figures represent recorded firewall
+                        decisions and rule evaluations. They do not confirm actual operating-system
+                        or network-level traffic blocking.
+                      </div>
+                    )}
+                  </>
+                )}
+              </>
+            );
+          })()}
         </section>
 
         {/* Top blocked sources */}

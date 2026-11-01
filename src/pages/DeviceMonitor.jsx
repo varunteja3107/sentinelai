@@ -18,6 +18,13 @@ export default function DeviceMonitor() {
   const [token, setToken] = useState("");
   const [connectedToken, setConnectedToken] = useState("");
   const [device, setDevice] = useState(null);
+  const [devices, setDevices] = useState([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState("");
+  const [deviceCounts, setDeviceCounts] = useState({
+    total: 0,
+    online: 0,
+    offline: 0,
+  });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [locationConsent, setLocationConsent] = useState(false);
@@ -71,15 +78,52 @@ export default function DeviceMonitor() {
     if (!authToken) return;
     setLoading(true);
     try {
-      const res = await fetch(`${API}/api/device-monitor/latest`, {
-        headers: { Authorization: `Bearer ${authToken}` },
-        cache: "no-store",
+      const headers = { Authorization: `Bearer ${authToken}` };
+
+      const [latestResponse, devicesResponse] = await Promise.all([
+        fetch(`${API}/api/device-monitor/latest`, {
+          headers,
+          cache: "no-store",
+        }),
+        fetch(`${API}/api/device-monitor/devices`, {
+          headers,
+          cache: "no-store",
+        }),
+      ]);
+
+      const [latestBody, devicesBody] = await Promise.all([
+        latestResponse.json().catch(() => ({})),
+        devicesResponse.json().catch(() => ({})),
+      ]);
+
+      if (!latestResponse.ok) {
+        throw new Error(latestBody.detail || `Latest-device API returned ${latestResponse.status}`);
+      }
+
+      if (!devicesResponse.ok) {
+        throw new Error(devicesBody.detail || `Device-list API returned ${devicesResponse.status}`);
+      }
+
+      setDevice(latestBody.device || null);
+      const receivedDevices = Array.isArray(devicesBody.devices) ? devicesBody.devices : [];
+      setDevices(receivedDevices);
+      setSelectedDeviceId(currentId =>
+        receivedDevices.some(item => item.device_id === currentId)
+          ? currentId
+          : (latestBody.device?.device_id || receivedDevices[0]?.device_id || "")
+      );
+      setDeviceCounts({
+        total: devicesBody.total ?? 0,
+        online: devicesBody.online ?? 0,
+        offline: devicesBody.offline ?? 0,
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.detail || `Monitor API returned ${res.status}`);
-      setDevice(body.device || null);
+
       setError("");
-      setStatusMessage(body.device ? "Connected to your laptop monitor." : "Token accepted. Start the monitor agent on your Mac.");
+      setStatusMessage(
+        devicesBody.total
+          ? `Connected. Monitoring ${devicesBody.total} registered device(s).`
+          : "Token accepted. Start the monitor agent on your Mac."
+      );
     } catch (e) {
       setError(e.message || "Could not connect to the monitor service.");
       setStatusMessage("Connection needs attention.");
@@ -211,11 +255,83 @@ export default function DeviceMonitor() {
           <input aria-label="Device monitor token" type="password" autoComplete="off" value={token} onChange={e => setToken(e.target.value)} placeholder="Paste device-monitor token" style={{ flex: "1 1 280px", minWidth: 0, background: "#081626", color: "#E2E8F0", border: "1px solid #334155", borderRadius: 8, padding: 12 }} />
           <button type="submit" style={button}><LockKeyhole size={16} /> Connect</button>
           <button type="button" onClick={() => refresh()} style={button} disabled={!connectedToken || loading}><RefreshCw size={16} /> Refresh</button>
-          {connectedToken && <button type="button" onClick={() => { stopLocationSharing(); setConnectedToken(""); setDevice(null); setToken(""); setStatusMessage("Disconnected."); }} style={button}>Disconnect</button>}
+          {connectedToken && <button type="button" onClick={() => { stopLocationSharing(); setConnectedToken(""); setDevice(null); setDevices([]); setDeviceCounts({ total: 0, online: 0, offline: 0 }); setSelectedDeviceId(""); setToken(""); setStatusMessage("Disconnected."); }} style={button}>Disconnect</button>}
         </form>
         <p style={{ ...muted, marginBottom: 0 }}>{statusMessage}</p>
         {error && <p role="alert" style={{ marginBottom: 0, color: "#FCA5A5" }}>{error}</p>}
       </section>
+
+      {connectedToken && (
+        <>
+          <section style={panel}>
+            <h2 style={{ marginTop: 0 }}>Multi-device security overview</h2>
+            <p style={muted}>Live health reports from registered SentinelAI agents.</p>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", gap: 12 }}>
+              {[
+                { label: "Registered devices", value: deviceCounts.total, color: "#E2E8F0" },
+                { label: "Online devices", value: deviceCounts.online, color: "#4ADE80" },
+                { label: "Offline devices", value: deviceCounts.offline, color: "#FBBF24" },
+              ].map(item => (
+                <div key={item.label} style={{ ...panel, padding: 16 }}>
+                  <div style={muted}>{item.label}</div>
+                  <div style={{ color: item.color, fontSize: 30, fontWeight: 800, marginTop: 8 }}>{item.value}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section style={panel}>
+            <h2 style={{ marginTop: 0 }}>Registered devices</h2>
+            {devices.length === 0 ? (
+              <p style={muted}>No devices registered yet. Start a SentinelAI device agent to see it here.</p>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(230px,1fr))", gap: 12 }}>
+                {devices.map(item => {
+                  const isSelected = item.device_id === selectedDeviceId;
+                  const isOnline = item.status === "ONLINE";
+                  return (
+                    <button
+                      key={item.device_id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedDeviceId(item.device_id);
+                        setDevice(item);
+                      }}
+                      aria-pressed={isSelected}
+                      style={{
+                        ...panel,
+                        textAlign: "left",
+                        cursor: "pointer",
+                        border: isSelected ? "1px solid #22D3EE" : panel.border,
+                        background: isSelected ? "#123047" : "#0B1728",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
+                        <strong><Laptop size={17} color="#22D3EE" /> {item.device_name}</strong>
+                        <span style={{ color: isOnline ? "#4ADE80" : "#FBBF24", fontSize: 11, fontWeight: 800 }}>
+                          {isOnline ? "● ONLINE" : "● OFFLINE"}
+                        </span>
+                      </div>
+                      <p style={{ ...muted, margin: "9px 0" }}>{item.platform || "Unknown platform"} · {item.local_ip || "IP unavailable"}</p>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: 8, marginTop: 14 }}>
+                        <div><div style={muted}>CPU</div><strong>{item.cpu_percent ?? "--"}{item.cpu_percent != null ? "%" : ""}</strong></div>
+                        <div><div style={muted}>Memory</div><strong>{item.memory_percent ?? "--"}{item.memory_percent != null ? "%" : ""}</strong></div>
+                        <div><div style={muted}>Disk</div><strong>{item.disk_percent ?? "--"}{item.disk_percent != null ? "%" : ""}</strong></div>
+                      </div>
+                      <div style={{ ...muted, marginTop: 13 }}>
+                        Last seen: {item.last_seen ? new Date(item.last_seen).toLocaleString() : "Never"}
+                      </div>
+                      <div style={{ color: isSelected ? "#22D3EE" : "#94A3B8", fontSize: 12, marginTop: 10 }}>
+                        {isSelected ? "Selected for detailed monitoring" : "Select device"}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        </>
+      )}
 
       {device && <>
         <section style={{ ...panel, display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12, justifyContent: "space-between" }}>

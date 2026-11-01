@@ -55,10 +55,12 @@ const cyanButton = {
 };
 
 async function apiRequest(path, options = {}) {
+  const token = sessionStorage.getItem("sentinelai_admin_token");
   const response = await fetch(`${API}${path}`, {
     ...options,
     headers: {
       ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...options.headers,
     },
   });
@@ -122,6 +124,35 @@ export default function FirewallRules() {
   const [simulation, setSimulation] = useState(null);
   const [simulating, setSimulating] = useState(false);
 
+  // Advanced firewall policy simulator and analytics
+  const [policyInput, setPolicyInput] = useState({
+    source_ip: "198.51.100.25",
+    destination_ip: "",
+    port: "443",
+    protocol: "TCP",
+  });
+  const [policyResult, setPolicyResult] = useState(null);
+  const [policyLoading, setPolicyLoading] = useState(false);
+  const [firewallAnalytics, setFirewallAnalytics] = useState(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [advancedError, setAdvancedError] = useState("");
+  // Advanced firewall rule management
+  const [managedRules, setManagedRules] = useState([]);
+  const [rulesLoading, setRulesLoading] = useState(false);
+  const [ruleSaving, setRuleSaving] = useState(false);
+  const [editingRuleId, setEditingRuleId] = useState(null);
+  const [ruleForm, setRuleForm] = useState({
+    name: "",
+    source: "Any",
+    destination: "Any",
+    port: "443",
+    protocol: "TCP",
+    action: "BLOCK",
+    priority: 100,
+    description: "",
+  });
+
+
 
   const loadFirewall = useCallback(async (showSpinner = true) => {
     if (showSpinner) setRefreshing(true);
@@ -180,9 +211,172 @@ export default function FirewallRules() {
 
   useEffect(() => {
     loadFirewall(false);
+    loadManagedRules();
     const timer = setInterval(() => loadFirewall(false), 10000);
     return () => clearInterval(timer);
   }, [loadFirewall]);
+
+  async function loadManagedRules(showSpinner = false) {
+    if (showSpinner) setRulesLoading(true);
+    try {
+      const result = await apiRequest("/api/firewall/rules");
+      setManagedRules(Array.isArray(result) ? result : []);
+    } catch (err) {
+      setAdvancedError(err.message || "Unable to load firewall rules.");
+    } finally {
+      setRulesLoading(false);
+    }
+  }
+
+  async function saveFirewallRule(event) {
+    event.preventDefault();
+    setRuleSaving(true);
+    setAdvancedError("");
+    setNotice("");
+
+    try {
+      const payload = {
+        ...ruleForm,
+        name: ruleForm.name.trim(),
+        source: ruleForm.source.trim() || "Any",
+        destination: ruleForm.destination.trim() || "Any",
+        port: String(ruleForm.port).trim(),
+        protocol: ruleForm.protocol,
+        action: ruleForm.action,
+        priority: Number(ruleForm.priority),
+        description: ruleForm.description.trim(),
+      };
+
+      const editing = editingRuleId !== null;
+      await apiRequest(
+        editing
+          ? `/api/firewall/rules/${editingRuleId}`
+          : "/api/firewall/rules",
+        {
+          method: editing ? "PUT" : "POST",
+          body: JSON.stringify(payload),
+        }
+      );
+
+      setNotice(editing ? "Firewall rule updated." : "Firewall rule created.");
+      setEditingRuleId(null);
+      setRuleForm({
+        name: "",
+        source: "Any",
+        destination: "Any",
+        port: "443",
+        protocol: "TCP",
+        action: "BLOCK",
+        priority: 100,
+        description: "",
+      });
+      await loadManagedRules(true);
+    } catch (err) {
+      setAdvancedError(err.message || "Unable to save firewall rule.");
+    } finally {
+      setRuleSaving(false);
+    }
+  }
+
+  function editFirewallRule(rule) {
+    if (!rule.custom) return;
+
+    setEditingRuleId(rule.id);
+    setRuleForm({
+      name: rule.name || "",
+      source: rule.source || "Any",
+      destination: rule.destination || "Any",
+      port: rule.port || "*",
+      protocol: rule.protocol || "TCP",
+      action: rule.action || "BLOCK",
+      priority: Number(rule.priority) || 100,
+      description: rule.description || "",
+    });
+    setAdvancedError("");
+    setNotice("");
+  }
+
+  async function changeFirewallRuleStatus(rule) {
+    try {
+      setAdvancedError("");
+      await apiRequest(
+        `/api/firewall/rules/${rule.id}/status?enabled=${rule.status !== "ACTIVE"}`,
+        { method: "POST" }
+      );
+      setNotice(`Rule "${rule.name}" status updated.`);
+      await loadManagedRules();
+    } catch (err) {
+      setAdvancedError(err.message || "Unable to update rule status.");
+    }
+  }
+
+  async function deleteFirewallRule(rule) {
+    if (!rule.custom) return;
+    if (!window.confirm(`Delete firewall rule "${rule.name}"?`)) return;
+
+    try {
+      setAdvancedError("");
+      await apiRequest(`/api/firewall/rules/${rule.id}`, {
+        method: "DELETE",
+      });
+      if (editingRuleId === rule.id) {
+        setEditingRuleId(null);
+      }
+      setNotice(`Rule "${rule.name}" deleted.`);
+      await loadManagedRules();
+    } catch (err) {
+      setAdvancedError(err.message || "Unable to delete firewall rule.");
+    }
+  }
+
+  async function loadAdvancedFirewallData() {
+    setAnalyticsLoading(true);
+    try {
+      const result = await apiRequest("/api/firewall/analytics");
+      setFirewallAnalytics(result);
+      setAdvancedError("");
+    } catch (err) {
+      setAdvancedError(err.message || "Unable to load firewall analytics.");
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  }
+
+  async function runPolicySimulation(event) {
+    event.preventDefault();
+    setPolicyLoading(true);
+    setPolicyResult(null);
+    setAdvancedError("");
+
+    try {
+      const params = new URLSearchParams({
+        port: policyInput.port,
+        protocol: policyInput.protocol,
+      });
+
+      if (policyInput.source_ip.trim()) {
+        params.set("source_ip", policyInput.source_ip.trim());
+      }
+
+      if (policyInput.destination_ip.trim()) {
+        params.set("destination_ip", policyInput.destination_ip.trim());
+      }
+
+      const result = await apiRequest(
+        `/api/firewall/simulate?${params.toString()}`
+      );
+
+      setPolicyResult(result);
+    } catch (err) {
+      setAdvancedError(err.message || "Policy simulation failed.");
+    } finally {
+      setPolicyLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    loadAdvancedFirewallData();
+  }, []);
 
   const blockedThreats = threats.filter(
     (threat) => String(threat.action || "").toUpperCase() === "BLOCK"
@@ -385,7 +579,644 @@ export default function FirewallRules() {
           </div>
         )}
 
-        <section
+        <section style={{ ...panel, marginBottom: 20 }}>
+  <div style={{
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 12,
+    marginBottom: 16,
+  }}>
+    <div>
+
+        <section style={{ ...panel, marginBottom: 20 }}>
+          <div style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 12,
+            marginBottom: 18,
+          }}>
+            <div>
+              <h2 style={{ margin: "0 0 6px", fontSize: 20 }}>
+                <Shield size={20} color="#22D3EE" /> Advanced Rule Builder
+              </h2>
+              <p style={muted}>
+                Create and manage persistent, priority-based firewall policies.
+              </p>
+            </div>
+            <Badge color="#22D3EE">POLICY MANAGEMENT</Badge>
+          </div>
+
+          {advancedError && (
+            <div role="alert" style={{
+              padding: 12,
+              marginBottom: 14,
+              border: "1px solid #7F1D1D",
+              borderRadius: 8,
+              color: "#FCA5A5",
+              background: "#450A0A33",
+            }}>
+              {advancedError}
+            </div>
+          )}
+
+          <form onSubmit={saveFirewallRule}>
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit,minmax(190px,1fr))",
+              gap: 13,
+            }}>
+              <label style={muted}>
+                Rule name *
+                <input
+                  required
+                  maxLength={128}
+                  style={{ ...inputStyle, marginTop: 7 }}
+                  value={ruleForm.name}
+                  onChange={(e) => setRuleForm({
+                    ...ruleForm, name: e.target.value,
+                  })}
+                  placeholder="Block suspicious traffic"
+                />
+              </label>
+
+              <label style={muted}>
+                Source IP / CIDR
+                <input
+                  style={{ ...inputStyle, marginTop: 7 }}
+                  value={ruleForm.source}
+                  onChange={(e) => setRuleForm({
+                    ...ruleForm, source: e.target.value,
+                  })}
+                  placeholder="Any or 192.168.1.0/24"
+                />
+              </label>
+
+              <label style={muted}>
+                Destination IP / CIDR
+                <input
+                  style={{ ...inputStyle, marginTop: 7 }}
+                  value={ruleForm.destination}
+                  onChange={(e) => setRuleForm({
+                    ...ruleForm, destination: e.target.value,
+                  })}
+                  placeholder="Any or 10.0.0.0/24"
+                />
+              </label>
+
+              <label style={muted}>
+                Destination port *
+                <input
+                  required
+                  style={{ ...inputStyle, marginTop: 7 }}
+                  value={ruleForm.port}
+                  onChange={(e) => setRuleForm({
+                    ...ruleForm, port: e.target.value,
+                  })}
+                  placeholder="443, 8000-8100, or *"
+                />
+              </label>
+
+              <label style={muted}>
+                Protocol
+                <select
+                  style={{ ...inputStyle, marginTop: 7 }}
+                  value={ruleForm.protocol}
+                  onChange={(e) => setRuleForm({
+                    ...ruleForm, protocol: e.target.value,
+                    port: e.target.value === "ICMP" ? "*" : ruleForm.port,
+                  })}
+                >
+                  <option value="TCP">TCP</option>
+                  <option value="UDP">UDP</option>
+                  <option value="ICMP">ICMP</option>
+                  <option value="ANY">ANY</option>
+                </select>
+              </label>
+
+              <label style={muted}>
+                Action
+                <select
+                  style={{ ...inputStyle, marginTop: 7 }}
+                  value={ruleForm.action}
+                  onChange={(e) => setRuleForm({
+                    ...ruleForm, action: e.target.value,
+                  })}
+                >
+                  <option value="ALLOW">ALLOW</option>
+                  <option value="BLOCK">BLOCK</option>
+                  <option value="MONITOR">MONITOR</option>
+                </select>
+              </label>
+
+              <label style={muted}>
+                Priority (1-1000)
+                <input
+                  required
+                  type="number"
+                  min="1"
+                  max="1000"
+                  style={{ ...inputStyle, marginTop: 7 }}
+                  value={ruleForm.priority}
+                  onChange={(e) => setRuleForm({
+                    ...ruleForm, priority: e.target.value,
+                  })}
+                />
+              </label>
+            </div>
+
+            <label style={{ ...muted, display: "block", marginTop: 13 }}>
+              Description
+              <textarea
+                maxLength={500}
+                rows={2}
+                style={{ ...inputStyle, marginTop: 7, resize: "vertical" }}
+                value={ruleForm.description}
+                onChange={(e) => setRuleForm({
+                  ...ruleForm, description: e.target.value,
+                })}
+                placeholder="Explain when and why this policy should apply."
+              />
+            </label>
+
+            <div style={{
+              display: "flex",
+              gap: 10,
+              flexWrap: "wrap",
+              marginTop: 14,
+            }}>
+              <button type="submit" disabled={ruleSaving} style={cyanButton}>
+                <ShieldCheck size={16} />
+                {ruleSaving
+                  ? "Saving..."
+                  : editingRuleId !== null
+                    ? "Update Rule"
+                    : "Create Firewall Rule"}
+              </button>
+
+              {editingRuleId !== null && (
+                <button
+                  type="button"
+                  style={buttonStyle}
+                  onClick={() => {
+                    setEditingRuleId(null);
+                    setRuleForm({
+                      name: "",
+                      source: "Any",
+                      destination: "Any",
+                      port: "443",
+                      protocol: "TCP",
+                      action: "BLOCK",
+                      priority: 100,
+                      description: "",
+                    });
+                    setAdvancedError("");
+                  }}
+                >
+                  Cancel Editing
+                </button>
+              )}
+
+              <button
+                type="button"
+                style={buttonStyle}
+                onClick={() => loadManagedRules(true)}
+                disabled={rulesLoading}
+              >
+                <RefreshCw size={15} />
+                {rulesLoading ? "Loading..." : "Refresh Rules"}
+              </button>
+            </div>
+          </form>
+
+          <div style={{
+            borderTop: "1px solid #263449",
+            marginTop: 22,
+            paddingTop: 18,
+          }}>
+            <div style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 10,
+              marginBottom: 13,
+            }}>
+              <h3 style={{ margin: 0, fontSize: 17 }}>Firewall Policy List</h3>
+              <span style={muted}>
+                {managedRules.length} total rules
+              </span>
+            </div>
+
+            {rulesLoading && <p style={muted}>Loading firewall rules...</p>}
+
+            {!rulesLoading && managedRules.length === 0 && (
+              <p style={muted}>No firewall rules returned by the API.</p>
+            )}
+
+            <div style={{ display: "grid", gap: 10 }}>
+              {managedRules.map((rule) => (
+                <div
+                  key={`${rule.custom ? "custom" : "default"}-${rule.id}`}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "minmax(0,1fr) auto",
+                    gap: 12,
+                    alignItems: "center",
+                    padding: 13,
+                    border: "1px solid #263449",
+                    borderRadius: 10,
+                    background: "#0B1120",
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                    }}>
+                      <strong>{rule.name}</strong>
+                      <Badge color={
+                        rule.action === "BLOCK" ? "#F87171"
+                          : rule.action === "ALLOW" ? "#4ADE80"
+                          : "#FBBF24"
+                      }>{rule.action}</Badge>
+                      <Badge color={
+                        rule.status === "ACTIVE" ? "#4ADE80" : "#94A3B8"
+                      }>{rule.status}</Badge>
+                      <span style={muted}>
+                        {rule.custom ? "CUSTOM" : "BUILT-IN"}
+                      </span>
+                    </div>
+                    <div style={{
+                      ...muted,
+                      marginTop: 7,
+                      overflowWrap: "anywhere",
+                    }}>
+                      Source: {rule.source} · Destination: {rule.destination}
+                      <br />
+                      Port: {rule.port} · Protocol: {rule.protocol}
+                      · Priority: {rule.priority}
+                    </div>
+                    {rule.description && (
+                      <p style={{ ...muted, margin: "6px 0 0" }}>
+                        {rule.description}
+                      </p>
+                    )}
+                  </div>
+
+                  {rule.custom && (
+                    <div style={{
+                      display: "flex",
+                      gap: 7,
+                      flexWrap: "wrap",
+                      justifyContent: "flex-end",
+                    }}>
+                      <button
+                        type="button"
+                        style={buttonStyle}
+                        onClick={() => editFirewallRule(rule)}
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        style={buttonStyle}
+                        onClick={() => changeFirewallRuleStatus(rule)}
+                      >
+                        {rule.status === "ACTIVE" ? "Disable" : "Enable"}
+                      </button>
+                      <button
+                        type="button"
+                        style={{
+                          ...buttonStyle,
+                          color: "#FCA5A5",
+                          borderColor: "#7F1D1D",
+                        }}
+                        onClick={() => deleteFirewallRule(rule)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        <h2 style={{ margin: "0 0 6px", fontSize: 19 }}>
+        <ShieldCheck size={19} color="#22D3EE" /> Policy Simulator
+      </h2>
+      <p style={muted}>
+        Dry-run a traffic request against active firewall policies.
+      </p>
+    </div>
+    <Badge color="#FBBF24">DRY RUN</Badge>
+  </div>
+
+  <form onSubmit={runPolicySimulation}>
+    <div style={{
+      display: "grid",
+      gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))",
+      gap: 12,
+      alignItems: "end",
+    }}>
+      <label style={muted}>
+        Source IP
+        <input
+          style={{ ...inputStyle, marginTop: 7 }}
+          value={policyInput.source_ip}
+          onChange={(e) => setPolicyInput({
+            ...policyInput,
+            source_ip: e.target.value,
+          })}
+          placeholder="198.51.100.25"
+        />
+      </label>
+
+            <label style={muted}>
+        Destination IP
+        <input
+          style={{ ...inputStyle, marginTop: 7 }}
+          value={policyInput.destination_ip}
+          onChange={(e) => setPolicyInput({
+            ...policyInput,
+            destination_ip: e.target.value,
+          })}
+          placeholder="10.0.0.10 or 10.0.0.0/24"
+        />
+      </label>
+<label style={muted}>
+        Destination port
+        <input
+          style={{ ...inputStyle, marginTop: 7 }}
+          type="number"
+          min="1"
+          max="65535"
+          required
+          value={policyInput.port}
+          onChange={(e) => setPolicyInput({
+            ...policyInput,
+            port: e.target.value,
+          })}
+        />
+      </label>
+
+      <label style={muted}>
+        Protocol
+        <select
+          style={{ ...inputStyle, marginTop: 7 }}
+          value={policyInput.protocol}
+          onChange={(e) => setPolicyInput({
+            ...policyInput,
+            protocol: e.target.value,
+          })}
+        >
+          <option value="TCP">TCP</option>
+          <option value="UDP">UDP</option>
+          <option value="ICMP">ICMP</option>
+        </select>
+      </label>
+
+      <button
+        type="submit"
+        disabled={policyLoading}
+        style={cyanButton}
+      >
+        <Activity size={16} />
+        {policyLoading ? "Simulating..." : "Simulate Policy"}
+      </button>
+    </div>
+  </form>
+
+  {policyResult && (
+    <div style={{
+      marginTop: 18,
+      padding: 16,
+      borderRadius: 10,
+      border: "1px solid #334155",
+      background: "#0B1120",
+    }}>
+      <div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 10,
+      }}>
+        <div>
+          <div style={muted}>SIMULATED DECISION</div>
+          <div style={{
+            fontSize: 25,
+            fontWeight: 900,
+            marginTop: 5,
+            color: policyResult.decision === "ALLOW"
+              ? "#4ADE80"
+              : policyResult.decision === "BLOCK"
+                ? "#F87171"
+                : "#FBBF24",
+          }}>
+            {policyResult.decision}
+          </div>
+        </div>
+        <Badge color="#22D3EE">
+          {policyResult.rule_type}
+        </Badge>
+      </div>
+
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))",
+        gap: 12,
+        marginTop: 15,
+      }}>
+        <div>
+          <div style={muted}>WINNING RULE</div>
+          <strong>
+            {policyResult.winning_rule?.name || "Default Deny"}
+          </strong>
+        </div>
+        <div>
+          <div style={muted}>PRIORITY</div>
+          <strong>{policyResult.priority}</strong>
+        </div>
+        <div>
+          <div style={muted}>MATCHING RULES</div>
+          <strong>{policyResult.matching_rule_count}</strong>
+        </div>
+      </div>
+
+      <p style={{ ...muted, marginTop: 15 }}>
+        {policyResult.explanation}
+      </p>
+
+      {policyResult.matching_rules?.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <strong style={{ fontSize: 13 }}>Matching policies</strong>
+          {policyResult.matching_rules.map((rule, index) => (
+            <div
+              key={`${rule.id}-${index}`}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10,
+                flexWrap: "wrap",
+                padding: "10px 0",
+                borderBottom: "1px solid #263449",
+                fontSize: 13,
+              }}
+            >
+              <span>{rule.name}</span>
+              <span>
+                {rule.action} · Priority {rule.priority}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p style={{ ...muted, fontSize: 11, marginBottom: 0 }}>
+        {policyResult.note}
+      </p>
+    </div>
+  )}
+</section>
+
+<section style={{ ...panel, marginBottom: 20 }}>
+  <div style={{
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 12,
+    marginBottom: 16,
+  }}>
+    <div>
+      <h2 style={{ margin: "0 0 6px", fontSize: 19 }}>
+        <Activity size={19} color="#22D3EE" /> Rule Hit Analytics
+      </h2>
+      <p style={muted}>
+        Historical firewall decisions from the security audit log.
+      </p>
+    </div>
+    <button
+      type="button"
+      onClick={loadAdvancedFirewallData}
+      disabled={analyticsLoading}
+      style={buttonStyle}
+    >
+      <RefreshCw size={15} />
+      {analyticsLoading ? "Loading..." : "Refresh analytics"}
+    </button>
+  </div>
+
+  {advancedError && (
+    <p role="alert" style={{ color: "#FCA5A5", fontSize: 13 }}>
+      {advancedError}
+    </p>
+  )}
+
+  {firewallAnalytics ? (
+    <>
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))",
+        gap: 12,
+      }}>
+        <Stat
+          icon={Activity}
+          title="Recorded Decisions"
+          value={firewallAnalytics.total_decisions}
+        />
+        <Stat
+          icon={ShieldCheck}
+          title="Allowed"
+          value={firewallAnalytics.actions?.ALLOW ?? 0}
+          color="#4ADE80"
+        />
+        <Stat
+          icon={Ban}
+          title="Blocked"
+          value={firewallAnalytics.actions?.BLOCK ?? 0}
+          color="#F87171"
+        />
+        <Stat
+          icon={AlertTriangle}
+          title="Monitor"
+          value={firewallAnalytics.actions?.MONITOR ?? 0}
+          color="#FBBF24"
+        />
+      </div>
+
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))",
+        gap: 20,
+        marginTop: 22,
+      }}>
+        <div>
+          <h3 style={{ fontSize: 15 }}>Top matching rules</h3>
+          {(firewallAnalytics.top_rules || []).length ? (
+            firewallAnalytics.top_rules.map((item) => (
+              <div key={item.rule} style={{
+                padding: "10px 0",
+                borderBottom: "1px solid #263449",
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10,
+                fontSize: 13,
+              }}>
+                <span>{item.rule}</span>
+                <strong>{item.hits}</strong>
+              </div>
+            ))
+          ) : (
+            <p style={muted}>No recorded rule hits yet.</p>
+          )}
+        </div>
+
+        <div>
+          <h3 style={{ fontSize: 15 }}>Top source IPs</h3>
+          {(firewallAnalytics.top_sources || []).length ? (
+            firewallAnalytics.top_sources.map((item) => (
+              <div key={item.source_ip} style={{
+                padding: "10px 0",
+                borderBottom: "1px solid #263449",
+                display: "flex",
+                justifyContent: "space-between",
+                gap: 10,
+                fontSize: 13,
+              }}>
+                <code>{item.source_ip}</code>
+                <strong>{item.hits}</strong>
+              </div>
+            ))
+          ) : (
+            <p style={muted}>No source IP records yet.</p>
+          )}
+        </div>
+      </div>
+
+      <p style={{ ...muted, marginTop: 15, fontSize: 11 }}>
+        Based on up to {firewallAnalytics.sample_limit} recent recorded
+        firewall decisions. These are audit-log counts, not live packet
+        counters.
+      </p>
+    </>
+  ) : (
+    !advancedError && (
+      <p style={muted}>
+        {analyticsLoading ? "Loading firewall analytics..." : "No analytics available."}
+      </p>
+    )
+  )}
+</section>
+
+<section
           style={{
             ...panel,
             display: "flex",
