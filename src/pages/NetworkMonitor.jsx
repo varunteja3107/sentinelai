@@ -1,5 +1,5 @@
 import { API_BASE as API } from "../api";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import {
   Activity,
   Server,
@@ -8,7 +8,9 @@ import {
   ArrowDown,
 } from "lucide-react";
 import PageLayout from "../components/PageLayout";
-import NetworkTopology from "../components/network/NetworkTopology";
+const NetworkTopology = lazy(
+  () => import("../components/network/NetworkTopology")
+);
 
 function formatTrafficRate(bytesPerSecond) {
   if (bytesPerSecond === null || bytesPerSecond === undefined) {
@@ -333,7 +335,9 @@ function NetworkMonitor() {
     >
       <div className="monitor-page">
 
-        <NetworkTopology />
+        <Suspense fallback={<div className="monitor-page">Loading network topology...</div>}>
+          <NetworkTopology />
+        </Suspense>
 
         {/* Network summary cards */}
         <div className="monitor-stats">

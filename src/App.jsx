@@ -1,48 +1,56 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 
-import Dashboard from "./pages/Dashboard";
-import ThreatDetection from "./pages/ThreatDetection";
-import NetworkMonitor from "./pages/NetworkMonitor";
-import ZeroTrust from "./pages/ZeroTrust";
-import FirewallRules from "./pages/FirewallRules";
-import SecurityLogs from "./pages/SecurityLogs";
-import Analytics from "./pages/Analytics";
-import Incidents from "./pages/Incidents";
-import Assistant from "./pages/Assistant";
-import Settings from "./pages/Settings";
-import DatasetLab from "./pages/DatasetLab";
-import DeviceMonitor from "./pages/DeviceMonitor";
-import ResponseCenter from "./pages/ResponseCenter";
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const ThreatDetection = lazy(() => import("./pages/ThreatDetection"));
+const NetworkMonitor = lazy(() => import("./pages/NetworkMonitor"));
+const ZeroTrust = lazy(() => import("./pages/ZeroTrust"));
+const FirewallRules = lazy(() => import("./pages/FirewallRules"));
+const SecurityLogs = lazy(() => import("./pages/SecurityLogs"));
+const Analytics = lazy(() => import("./pages/Analytics"));
+const Incidents = lazy(() => import("./pages/Incidents"));
+const Assistant = lazy(() => import("./pages/Assistant"));
+const Settings = lazy(() => import("./pages/Settings"));
+const DatasetLab = lazy(() => import("./pages/DatasetLab"));
+const DeviceMonitor = lazy(() => import("./pages/DeviceMonitor"));
+const ResponseCenter = lazy(() => import("./pages/ResponseCenter"));
 
 function App() {
   return (
     <BrowserRouter>
-      <Routes>
-
-        <Route path="/" element={<Dashboard />} />
-
-        <Route path="/threats" element={<ThreatDetection />} />
-
-        <Route path="/network" element={<NetworkMonitor />} />
-
-        <Route path="/zero-trust" element={<ZeroTrust />} />
-
-        <Route path="/firewall" element={<FirewallRules />} />
-
-        <Route path="/logs" element={<SecurityLogs />} />
-
-        <Route path="/analytics" element={<Analytics />} />
-
-        <Route path="/incidents" element={<Incidents />} />
-
-        <Route path="/assistant" element={<Assistant />} />
-
-        <Route path="/settings" element={<Settings />} />
-
-        <Route path="/dataset-lab" element={<DatasetLab />} />
-        <Route path="/device-monitor" element={<DeviceMonitor />} />
-        <Route path="/response-center" element={<ResponseCenter />} />
-      </Routes>
+      <Suspense
+        fallback={
+          <div
+            style={{
+              minHeight: "100vh",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "#0b1120",
+              color: "#ffffff",
+              fontSize: "16px",
+            }}
+          >
+            Loading SentinelAI...
+          </div>
+        }
+      >
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/threats" element={<ThreatDetection />} />
+          <Route path="/network" element={<NetworkMonitor />} />
+          <Route path="/zero-trust" element={<ZeroTrust />} />
+          <Route path="/firewall" element={<FirewallRules />} />
+          <Route path="/logs" element={<SecurityLogs />} />
+          <Route path="/analytics" element={<Analytics />} />
+          <Route path="/incidents" element={<Incidents />} />
+          <Route path="/assistant" element={<Assistant />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/dataset-lab" element={<DatasetLab />} />
+          <Route path="/device-monitor" element={<DeviceMonitor />} />
+          <Route path="/response-center" element={<ResponseCenter />} />
+        </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }

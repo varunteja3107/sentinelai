@@ -1,6 +1,7 @@
 import ipaddress
 import re
 import time
+import logging
 from network_topology import router as network_topology_router
 
 
@@ -38,13 +39,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from database import Base, engine, get_db, SessionLocal
-from models import Threat, Device, Incident, ResponseAction, RevokedToken, UserSession, SessionEvent, FirewallRule, AuditLog, BlockSpikeAlert, DeviceAgent, DeviceTelemetry, AdminUser
+from models import Threat, Device, Incident, ResponseAction, RevokedToken, UserSession, SessionEvent, FirewallRule, AuditLog, BlockSpikeAlert, DeviceAgent, DeviceTelemetry, AdminUser, DeviceAssessment, DeviceAlert
+from device_intelligence_service import assess_and_persist
 from schemas import ThreatCreate, ThreatResponse, ZeroTrustRequest, ZeroTrustResponse, ResponsePlaybookRequest, ResponseActionCreate, ResponseActionReview, ResponseActionRollback
 
 from ai_engine import ThreatDetectionAI
+from copilot_engine import run_copilot
 from risk_engine import calculate_risk
 from threat_explanations import explain_detection
 load_dotenv()
+logger = logging.getLogger("sentinelai.api")
 
 security = HTTPBearer(auto_error=False)
 
@@ -2854,6 +2858,48 @@ def security_assistant(question: str, db: Session = Depends(get_db)):
 # SECURITY ANALYTICS
 # ============================================================
 
+
+
+# ============================================================
+# SENTINELAI HYBRID AI COPILOT
+# ============================================================
+
+class CopilotAnalyzeRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=4000)
+    network_event: Optional[dict] = None
+
+
+@app.post("/api/copilot/analyze")
+def analyze_with_copilot(
+    payload: CopilotAnalyzeRequest,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    try:
+        result = run_copilot(
+            question=payload.question,
+            db=db,
+            network_event=payload.network_event,
+        )
+
+        return {
+            **result,
+            "administrator": admin.get("sub", "admin"),
+        }
+
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail=str(error),
+        )
+
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503,
+            detail="Copilot AI provider is temporarily unavailable. Please try again.",
+        )
+
+
 @app.get("/api/analytics/summary")
 def analytics_summary(db: Session = Depends(get_db)):
 
@@ -3535,6 +3581,22 @@ def device_monitor_report(
         db.add(telemetry)
         db.commit()
 
+        # Intelligence runs after telemetry is safely committed.
+        try:
+            intelligence_result = assess_and_persist(db, telemetry)
+            logger.info(
+                "Device assessment saved: device=%s severity=%s risk=%s",
+                device_id,
+                intelligence_result.get("severity"),
+                intelligence_result.get("risk_score"),
+            )
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "Device intelligence assessment failed for device %s",
+                device_id,
+            )
+
         return {
             "ok": True,
             "device_id": device_id,
@@ -3544,6 +3606,205 @@ def device_monitor_report(
     except Exception:
         db.rollback()
         raise
+
+
+
+
+# =========================================================
+# DEVICE INTELLIGENCE: ADMIN ASSESSMENTS AND ALERTS
+# =========================================================
+
+def serialize_device_assessment(record):
+    return {
+        "id": record.id,
+        "device_id": record.device_id,
+        "risk_score": record.risk_score,
+        "severity": record.severity,
+        "confidence": record.confidence,
+        "baseline_samples": record.baseline_samples,
+        "anomaly_count": record.anomaly_count,
+        "evidence": record.evidence or [],
+        "network_delta_mb": record.network_delta_mb,
+        "recommended_action": record.recommended_action,
+        "assessed_at": (
+            record.assessed_at.isoformat() if record.assessed_at else None
+        ),
+    }
+
+
+def serialize_device_alert(record):
+    return {
+        "id": record.id,
+        "device_id": record.device_id,
+        "anomaly_type": record.anomaly_type,
+        "severity": record.severity,
+        "risk_score": record.risk_score,
+        "title": record.title,
+        "description": record.description,
+        "evidence": record.evidence or [],
+        "status": record.status,
+        "first_detected_at": (
+            record.first_detected_at.isoformat()
+            if record.first_detected_at else None
+        ),
+        "last_detected_at": (
+            record.last_detected_at.isoformat()
+            if record.last_detected_at else None
+        ),
+        "acknowledged_at": (
+            record.acknowledged_at.isoformat()
+            if record.acknowledged_at else None
+        ),
+        "acknowledged_by": record.acknowledged_by,
+        "resolved_at": (
+            record.resolved_at.isoformat()
+            if record.resolved_at else None
+        ),
+    }
+
+
+@app.get("/api/device-monitor/assessments")
+def list_device_assessments(
+    device_id: Optional[str] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    if not 1 <= limit <= 200:
+        raise HTTPException(status_code=400, detail="Limit must be between 1 and 200.")
+
+    query = db.query(DeviceAssessment)
+
+    if device_id:
+        query = query.filter(DeviceAssessment.device_id == device_id.strip())
+
+    records = (
+        query.order_by(
+            DeviceAssessment.assessed_at.desc(),
+            DeviceAssessment.id.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "count": len(records),
+        "assessments": [serialize_device_assessment(item) for item in records],
+    }
+
+
+@app.get("/api/device-monitor/alerts")
+def list_device_alerts(
+    device_id: Optional[str] = None,
+    status: Optional[str] = None,
+    severity: Optional[str] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    if not 1 <= limit <= 200:
+        raise HTTPException(status_code=400, detail="Limit must be between 1 and 200.")
+
+    query = db.query(DeviceAlert)
+
+    if device_id:
+        query = query.filter(DeviceAlert.device_id == device_id.strip())
+
+    if status:
+        normalized_status = status.strip().upper()
+        if normalized_status not in {"OPEN", "ACKNOWLEDGED", "RESOLVED"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Status must be OPEN, ACKNOWLEDGED, or RESOLVED.",
+            )
+        query = query.filter(DeviceAlert.status == normalized_status)
+
+    if severity:
+        normalized_severity = severity.strip().upper()
+        if normalized_severity not in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid severity.",
+            )
+        query = query.filter(DeviceAlert.severity == normalized_severity)
+
+    records = (
+        query.order_by(DeviceAlert.last_detected_at.desc(), DeviceAlert.id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "count": len(records),
+        "alerts": [serialize_device_alert(item) for item in records],
+    }
+
+
+@app.get("/api/device-monitor/alerts/{alert_id}")
+def get_device_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    record = db.query(DeviceAlert).filter(DeviceAlert.id == alert_id).first()
+
+    if record is None:
+        raise HTTPException(status_code=404, detail="Device alert not found.")
+
+    return {"alert": serialize_device_alert(record)}
+
+
+@app.post("/api/device-monitor/alerts/{alert_id}/acknowledge")
+def acknowledge_device_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    record = db.query(DeviceAlert).filter(DeviceAlert.id == alert_id).first()
+
+    if record is None:
+        raise HTTPException(status_code=404, detail="Device alert not found.")
+
+    if record.status == "RESOLVED":
+        raise HTTPException(
+            status_code=409,
+            detail="Resolved alerts cannot be acknowledged.",
+        )
+
+    if record.status == "OPEN":
+        record.status = "ACKNOWLEDGED"
+        record.acknowledged_at = datetime.utcnow()
+        record.acknowledged_by = str(admin.get("sub", ""))[:128]
+        db.commit()
+        db.refresh(record)
+
+    return {
+        "message": "Alert acknowledged.",
+        "alert": serialize_device_alert(record),
+    }
+
+
+@app.post("/api/device-monitor/alerts/{alert_id}/resolve")
+def resolve_device_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+    admin: dict = Depends(get_current_admin),
+):
+    record = db.query(DeviceAlert).filter(DeviceAlert.id == alert_id).first()
+
+    if record is None:
+        raise HTTPException(status_code=404, detail="Device alert not found.")
+
+    if record.status != "RESOLVED":
+        record.status = "RESOLVED"
+        record.resolved_at = datetime.utcnow()
+        db.commit()
+        db.refresh(record)
+
+    return {
+        "message": "Alert resolved.",
+        "alert": serialize_device_alert(record),
+    }
 
 
 @app.post("/api/device-monitor/location")

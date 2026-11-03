@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Index, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, Index, Boolean, JSON
 from datetime import datetime
 
 from database import Base
@@ -255,3 +255,53 @@ class AdminUser(Base):
     is_active = Column(Boolean, nullable=False, default=True)
     created_by = Column(String(128), nullable=False, default="bootstrap")
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class DeviceAssessment(Base):
+    __tablename__ = "device_assessments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String(120), nullable=False, index=True)
+    risk_score = Column(Float, nullable=False, default=0)
+    severity = Column(String(20), nullable=False, default="LOW")
+    confidence = Column(String(20), nullable=False, default="LOW")
+    baseline_samples = Column(Integer, nullable=False, default=0)
+    anomaly_count = Column(Integer, nullable=False, default=0)
+    evidence = Column(JSON, nullable=False, default=list)
+    network_delta_mb = Column(Float, nullable=True)
+    recommended_action = Column(String(40), nullable=False)
+    assessed_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+Index(
+    "ix_device_assessments_device_assessed",
+    DeviceAssessment.device_id,
+    DeviceAssessment.assessed_at,
+)
+
+
+class DeviceAlert(Base):
+    __tablename__ = "device_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    alert_key = Column(String(160), unique=True, nullable=False, index=True)
+    device_id = Column(String(120), nullable=False, index=True)
+    anomaly_type = Column(String(80), nullable=False)
+    severity = Column(String(20), nullable=False)
+    risk_score = Column(Float, nullable=False, default=0)
+    title = Column(String(200), nullable=False)
+    description = Column(String(1000), nullable=False, default="")
+    evidence = Column(JSON, nullable=False, default=list)
+    status = Column(String(20), nullable=False, default="OPEN")
+    first_detected_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_detected_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    acknowledged_at = Column(DateTime, nullable=True)
+    acknowledged_by = Column(String(128), nullable=False, default="")
+    resolved_at = Column(DateTime, nullable=True)
+
+
+Index(
+    "ix_device_alerts_device_status",
+    DeviceAlert.device_id,
+    DeviceAlert.status,
+)

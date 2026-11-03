@@ -38,6 +38,7 @@ const SEVERITY_COLORS = {
   low: "#4ade80",
 };
 
+
 function Dashboard() {
   const [data, setData] = useState(null);
   const [network, setNetwork] = useState(null);

@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 import psutil
 import requests
 
-API = os.environ.get("SENTINELAI_API_URL", "https://sentinelai-wnno.onrender.com").rstrip("/")
+API = os.environ.get("SENTINELAI_API_URL", "https://sentinelai-api-2pqw.onrender.com").rstrip("/")
 TOKEN = os.environ.get("DEVICE_MONITOR_TOKEN", "").strip()
 INTERVAL_SECONDS = int(os.environ.get("SENTINELAI_MONITOR_INTERVAL", "15"))
 

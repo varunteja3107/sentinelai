@@ -16,7 +16,7 @@ VENV_DIR = INSTALL_DIR / ".venv"
 PYTHON = VENV_DIR / "bin" / "python"
 TOKEN_FILE = BASE_DIR / "device_monitor_token"
 
-API_URL = "https://sentinelai-wnno.onrender.com"
+API_URL = "https://sentinelai-api-2pqw.onrender.com"
 LABEL = "com.sentinelai.device-monitor"
 PLIST = HOME / "Library" / "LaunchAgents" / f"{LABEL}.plist"
 LOG_DIR = HOME / "Library" / "Logs"

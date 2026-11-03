@@ -54,33 +54,69 @@ function Assistant() {
     setLoading(true);
 
     try {
-      const response = await fetch(
-        `${API}/api/assistant?question=${encodeURIComponent(trimmed)}`,
-        {
-          method: "POST",
-        }
-      );
+      const token = sessionStorage.getItem("sentinelai_admin_token");
+
+      if (!token) {
+        throw new Error("ADMIN_LOGIN_REQUIRED");
+      }
+
+      const response = await fetch(`${API}/api/copilot/analyze`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ question: trimmed }),
+      });
 
       const data = await response.json();
 
+      if (response.status === 401 || response.status === 403) {
+        throw new Error("ADMIN_SESSION_EXPIRED");
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          typeof data.detail === "string"
+            ? data.detail
+            : "The SentinelAI Copilot could not complete the analysis."
+        );
+      }
+
+      const ml = data.ml_analysis;
+      const mlText = ml
+        ? `\n\nML Analysis: ${ml.threat_type} | Confidence: ${ml.confidence}% | Anomaly score: ${ml.anomaly_score}`
+        : "";
+
+      const safetyText =
+        "\n\nMode: Read-only | Administrator approval required for actions.";
+
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          text: data.answer || "I could not generate an answer.",
+          text: `${data.answer || "No response generated."}${mlText}${safetyText}`,
         },
       ]);
 
-      if (data.threat) {
-        setLatestThreat(data.threat);
+      if (data.summary) {
+        console.info("Copilot security context:", data.summary);
       }
     } catch (error) {
+      let message =
+        "Unable to connect to the SentinelAI Copilot. Check that the FastAPI backend is running.";
+
+      if (error.message === "ADMIN_LOGIN_REQUIRED") {
+        message = "Please sign in as an administrator before using SentinelAI Copilot.";
+      } else if (error.message === "ADMIN_SESSION_EXPIRED") {
+        message = "Your administrator session has expired. Please sign in again.";
+      } else if (error.message && !["ADMIN_LOGIN_REQUIRED", "ADMIN_SESSION_EXPIRED"].includes(error.message)) {
+        message = error.message;
+      }
+
       setMessages((prev) => [
         ...prev,
-        {
-          role: "assistant",
-          text: "Unable to connect to the SecureX AI security engine. Make sure the FastAPI backend is running on port 8000.",
-        },
+        { role: "assistant", text: message },
       ]);
     } finally {
       setLoading(false);
