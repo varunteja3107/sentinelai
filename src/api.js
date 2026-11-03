@@ -1,5 +1,5 @@
-const API_BASE = (
-  import.meta.env.VITE_API_URL || "http" + "://127.0.0.1:8000"
-).replace(/\/+$/, "");
+const API_BASE = import.meta.env.DEV
+  ? ""
+  : (import.meta.env.VITE_API_URL || "https" + "://sentinelai-api-2pqw.onrender.com").replace(/\/+$/, "");
 
 export { API_BASE };

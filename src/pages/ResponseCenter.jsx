@@ -3,9 +3,7 @@ import { ClipboardCheck, RefreshCw, ShieldAlert, RotateCcw } from "lucide-react"
 import PageLayout from "../components/PageLayout";
 import "./ResponseCenter.css";
 
-const API = (
-  import.meta.env.VITE_RESPONSE_API_URL || "http://127.0.0.1:8000"
-).replace(/\/+$/, "");
+import { API_BASE as API } from "../api";
 
 const initialForm = {
   threat_type: "PORT_SCAN",
