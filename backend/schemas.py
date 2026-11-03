@@ -110,6 +110,11 @@ class ResponseActionRollback(BaseModel):
     review_note: str = Field(default="", max_length=2000)
 
 
+class AdminCreateRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=128)
+    password: str = Field(min_length=12, max_length=1024)
+
+
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=128)
     password: str = Field(min_length=1, max_length=1024)

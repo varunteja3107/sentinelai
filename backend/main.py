@@ -1,4 +1,5 @@
 import ipaddress
+import re
 import time
 from network_topology import router as network_topology_router
 
@@ -6,10 +7,10 @@ from network_topology import router as network_topology_router
 from dotenv import load_dotenv
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Security
-from schemas import LoginRequest, LoginResponse
+from schemas import LoginRequest, LoginResponse, AdminCreateRequest
 import os
 import hashlib
-from auth import verify_password, create_access_token, verify_access_token
+from auth import verify_password, hash_password, create_access_token, verify_access_token
 from schemas import ResponseActionReview
 from schemas import (
     ThreatCreate,
@@ -37,7 +38,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from database import Base, engine, get_db, SessionLocal
-from models import Threat, Device, Incident, ResponseAction, RevokedToken, UserSession, SessionEvent, FirewallRule, AuditLog, BlockSpikeAlert, DeviceAgent, DeviceTelemetry
+from models import Threat, Device, Incident, ResponseAction, RevokedToken, UserSession, SessionEvent, FirewallRule, AuditLog, BlockSpikeAlert, DeviceAgent, DeviceTelemetry, AdminUser
 from schemas import ThreatCreate, ThreatResponse, ZeroTrustRequest, ZeroTrustResponse, ResponsePlaybookRequest, ResponseActionCreate, ResponseActionReview, ResponseActionRollback
 
 from ai_engine import ThreatDetectionAI
@@ -99,6 +100,35 @@ def get_current_admin(
             detail="Administrator access required",
         )
 
+    # The environment-configured primary admin remains valid.
+    primary_username = os.getenv("SENTINELAI_ADMIN_USERNAME", "").strip()
+    token_username = payload.get("sub", "")
+
+    if not (
+        primary_username
+        and hmac.compare_digest(token_username, primary_username)
+    ):
+        db = SessionLocal()
+        try:
+            account = (
+                db.query(AdminUser)
+                .filter(AdminUser.username == token_username)
+                .first()
+            )
+            if account is None or not account.is_active:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Administrator account is inactive or unavailable",
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+        except SQLAlchemyError:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service temporarily unavailable",
+            )
+        finally:
+            db.close()
+
     return payload
 
 Base.metadata.create_all(bind=engine)
@@ -145,27 +175,55 @@ def admin_login(payload: LoginRequest):
         "SENTINELAI_ADMIN_PASSWORD_HASH", ""
     ).strip()
 
-    if not admin_username or not admin_password_hash:
-        raise HTTPException(
-            status_code=503,
-            detail="Admin login is not configured",
-        )
+    authenticated_username = None
 
-    username_matches = hmac.compare_digest(
+    # Preserve the existing environment-configured primary admin.
+    if admin_username and hmac.compare_digest(
         payload.username, admin_username
-    )
-    password_matches = verify_password(
-        payload.password, admin_password_hash
-    )
+    ):
+        if admin_password_hash and verify_password(
+            payload.password, admin_password_hash
+        ):
+            authenticated_username = admin_username
+        else:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid username or password",
+            )
+    else:
+        # Check additional database-backed administrator accounts.
+        db = SessionLocal()
+        try:
+            account = (
+                db.query(AdminUser)
+                .filter(AdminUser.username == payload.username)
+                .first()
+            )
 
-    if not username_matches or not password_matches:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid username or password",
-        )
+            if (
+                account is None
+                or not account.is_active
+                or not verify_password(
+                    payload.password, account.password_hash
+                )
+            ):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid username or password",
+                )
+
+            authenticated_username = account.username
+
+        except SQLAlchemyError:
+            raise HTTPException(
+                status_code=503,
+                detail="Authentication service temporarily unavailable",
+            )
+        finally:
+            db.close()
 
     try:
-        token = create_access_token(admin_username)
+        token = create_access_token(authenticated_username)
     except RuntimeError:
         raise HTTPException(
             status_code=503,
@@ -175,10 +233,78 @@ def admin_login(payload: LoginRequest):
     return LoginResponse(
         access_token=token,
         expires_in=1800,
-        username=admin_username,
+        username=authenticated_username,
         role="admin",
     )
 
+
+@app.post("/api/auth/admins", status_code=201)
+def create_admin_account(
+    payload: AdminCreateRequest,
+    current_admin: dict = Depends(get_current_admin),
+):
+    username = payload.username.strip()
+
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{3,128}", username):
+        raise HTTPException(
+            status_code=422,
+            detail="Username may contain only letters, numbers, dots, underscores and hyphens",
+        )
+
+    try:
+        password_hash = hash_password(payload.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    db = SessionLocal()
+    try:
+        existing = (
+            db.query(AdminUser)
+            .filter(AdminUser.username == username)
+            .first()
+        )
+
+        if existing is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="An administrator with this username already exists",
+            )
+
+        account = AdminUser(
+            username=username,
+            password_hash=password_hash,
+            role="admin",
+            is_active=True,
+            created_by=current_admin.get("sub", "admin"),
+        )
+
+        db.add(account)
+        db.commit()
+        db.refresh(account)
+
+        return {
+            "id": account.id,
+            "username": account.username,
+            "role": account.role,
+            "is_active": account.is_active,
+            "created_by": account.created_by,
+            "created_at": account.created_at,
+        }
+
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="An administrator with this username already exists",
+        )
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(
+            status_code=503,
+            detail="Could not create administrator account",
+        )
+    finally:
+        db.close()
 
 
 ai = ThreatDetectionAI()

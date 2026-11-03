@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Index
+from sqlalchemy import Column, Integer, String, Float, DateTime, Index, Boolean
 from datetime import datetime
 
 from database import Base
@@ -243,3 +243,15 @@ Index(
     DeviceTelemetry.device_id,
     DeviceTelemetry.captured_at,
 )
+
+
+class AdminUser(Base):
+    __tablename__ = "admin_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(128), nullable=False, unique=True, index=True)
+    password_hash = Column(String(256), nullable=False)
+    role = Column(String(32), nullable=False, default="admin")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_by = Column(String(128), nullable=False, default="bootstrap")
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
