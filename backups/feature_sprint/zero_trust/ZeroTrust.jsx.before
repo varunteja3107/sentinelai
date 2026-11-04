@@ -1,0 +1,1776 @@
+import { API_BASE as API } from "../api";
+import SessionRiskMonitor from "../components/SessionRiskMonitor";
+import { useEffect, useState } from "react";
+import PageLayout from "../components/PageLayout";
+import {
+  ShieldCheck,
+  UserCheck,
+  MonitorCheck,
+  MapPin,
+  LockKeyhole,
+  Activity,
+  CheckCircle,
+  AlertTriangle,
+  XCircle,
+  RefreshCw
+} from "lucide-react";
+
+export default function ZeroTrust() {
+  const [form, setForm] = useState({
+    user: "admin",
+    device: "MacBook-Air",
+    resource: "Security Dashboard",
+    location: "Bangalore",
+    risk_score: 20,
+    identity_verified: true,
+    device_trusted: true,
+    network_trusted: true,
+    device_compliant: true,
+    device_posture_score: 100,
+    failed_login_attempts: 0,
+    unusual_activity: false,
+    session_age_minutes: 0,
+    resource_sensitivity: "NORMAL"
+  });
+
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const evaluateAccess = async () => {
+    setLoading(true);
+    setError("");
+
+    try {
+      const response = await fetch(`${API}/api/zero-trust/check`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          ...form,
+          risk_score: Number(form.risk_score)
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Zero Trust evaluation failed");
+      }
+
+      const data = await response.json();
+      setResult(data);
+    } catch (err) {
+      console.error(err);
+      setError(
+        "Unable to evaluate access. Make sure the SecureX AI backend is online."
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const decisionColor = (decision) => {
+    if (decision === "ALLOW") return "#22C55E";
+    if (decision === "MFA") return "#F59E0B";
+    if (decision === "LIMIT") return "#F97316";
+    return "#EF4444";
+  };
+
+  const decisionIcon = (decision) => {
+    if (decision === "ALLOW") return <CheckCircle size={34} />;
+    if (decision === "MFA") return <AlertTriangle size={34} />;
+    if (decision === "LIMIT") return <LockKeyhole size={34} />;
+    return <XCircle size={34} />;
+  };
+
+  return (
+  <PageLayout
+    title="Zero Trust Center"
+    subtitle="Continuous identity, device and risk-based access evaluation"
+  >
+    <div style={{ width: "100%", minWidth: 0
+      }}
+    >
+      <div style={{ maxWidth: "1450px", margin: "0 auto" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "28px"
+          }}
+        >
+          <div>
+            <div
+              style={{
+                color: "#64748B",
+                fontSize: "12px",
+                fontWeight: 800,
+                letterSpacing: "1.5px"
+              }}
+            >
+              SECURITY CONSOLE
+            </div>
+
+            <h1 style={{ margin: "7px 0 0", fontSize: "30px" }}>
+              Zero Trust Center
+            </h1>
+
+            <p style={{ color: "#94A3B8", marginTop: "8px" }}>
+              Continuous identity, device and risk-based access evaluation
+            </p>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              padding: "10px 15px",
+              borderRadius: "9px",
+              background: "rgba(34,197,94,0.08)",
+              border: "1px solid rgba(34,197,94,0.25)",
+              color: "#22C55E",
+              fontWeight: 700
+            }}
+          >
+            <ShieldCheck size={18} />
+            Zero Trust Active
+          </div>
+        </div>
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1.1fr 0.9fr",
+            gap: "20px"
+          }}
+        >
+          <section
+            style={{
+              background: "#111827",
+              border: "1px solid #1E293B",
+              borderRadius: "14px",
+              padding: "24px"
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "10px",
+                marginBottom: "22px"
+              }}
+            >
+              <Activity color="#00D4FF" />
+              <div>
+                <h2 style={{ margin: 0, fontSize: "19px" }}>
+                  Access Evaluation
+                </h2>
+                <p
+                  style={{
+                    margin: "5px 0 0",
+                    color: "#64748B",
+                    fontSize: "13px"
+                  }}
+                >
+                  Evaluate a user session against Zero Trust policies
+                </p>
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: "16px"
+              }}
+            >
+              <Field
+                icon={<UserCheck size={17} />}
+                label="User"
+                value={form.user}
+                onChange={(value) =>
+                  setForm({ ...form, user: value })
+                }
+              />
+
+              <Field
+                icon={<MonitorCheck size={17} />}
+                label="Device"
+                value={form.device}
+                onChange={(value) =>
+                  setForm({ ...form, device: value })
+                }
+              />
+
+              <Field
+                icon={<LockKeyhole size={17} />}
+                label="Resource"
+                value={form.resource}
+                onChange={(value) =>
+                  setForm({ ...form, resource: value })
+                }
+              />
+
+              <Field
+                icon={<MapPin size={17} />}
+                label="Location"
+                value={form.location}
+                onChange={(value) =>
+                  setForm({ ...form, location: value })
+                }
+              />
+            </div>
+
+            <div style={{ marginTop: "20px" }}>
+              <label
+                style={{
+                  display: "block",
+                  color: "#94A3B8",
+                  fontSize: "12px",
+                  fontWeight: 700,
+                  marginBottom: "8px"
+                }}
+              >
+                CURRENT RISK SCORE: {form.risk_score}/100
+              </label>
+
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={form.risk_score}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    risk_score: Number(e.target.value)
+                  })
+                }
+                style={{
+                  width: "100%",
+                  accentColor: "#00D4FF"
+                }}
+              />
+
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  color: "#64748B",
+                  fontSize: "11px"
+                }}
+              >
+                <span>Trusted</span>
+                <span>Suspicious</span>
+                <span>Critical</span>
+              </div>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: "12px",
+                marginTop: "22px"
+              }}
+            >
+              <Toggle
+                label="Identity Verified"
+                checked={form.identity_verified}
+                onChange={(value) =>
+                  setForm({
+                    ...form,
+                    identity_verified: value
+                  })
+                }
+              />
+
+              <Toggle
+                label="Device Trusted"
+                checked={form.device_trusted}
+                onChange={(value) =>
+                  setForm({
+                    ...form,
+                    device_trusted: value
+                  })
+                }
+              />
+            </div>
+
+            <div style={{
+              marginTop: 20,
+              padding: 16,
+              borderRadius: 10,
+              background: "#0B1120",
+              border: "1px solid #263449"
+            }}>
+              <h3 style={{ margin: "0 0 14px", fontSize: 15, color: "#67E8F9" }}>
+                Advanced Security Context
+              </h3>
+
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12
+              }}>
+                <Toggle
+                  label="Trusted Network"
+                  checked={form.network_trusted}
+                  onChange={(value) => setForm({ ...form, network_trusted: value })}
+                />
+                <Toggle
+                  label="Device Compliant"
+                  checked={form.device_compliant}
+                  onChange={(value) => setForm({ ...form, device_compliant: value })}
+                />
+                <Toggle
+                  label="Unusual Activity"
+                  checked={form.unusual_activity}
+                  onChange={(value) => setForm({ ...form, unusual_activity: value })}
+                />
+
+                <div>
+                  <label style={{ display: "block", color: "#94A3B8", fontSize: 12, marginBottom: 7 }}>
+                    Failed Login Attempts
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="20"
+                    value={form.failed_login_attempts}
+                    onChange={(e) => setForm({
+                      ...form,
+                      failed_login_attempts: Math.max(0, Math.min(20, Number(e.target.value)))
+                    })}
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      padding: 11,
+                      borderRadius: 8,
+                      background: "#111827",
+                      border: "1px solid #263449",
+                      color: "#F8FAFC"
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: "block", color: "#94A3B8", fontSize: 12, marginBottom: 7 }}>
+                    Session Age (minutes)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="10080"
+                    value={form.session_age_minutes}
+                    onChange={(e) => setForm({
+                      ...form,
+                      session_age_minutes: Math.max(0, Math.min(10080, Number(e.target.value)))
+                    })}
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      padding: 11,
+                      borderRadius: 8,
+                      background: "#111827",
+                      border: "1px solid #263449",
+                      color: "#F8FAFC"
+                    }}
+                  />
+                </div>
+
+                <div>
+                  <label style={{ display: "block", color: "#94A3B8", fontSize: 12, marginBottom: 7 }}>
+                    Resource Sensitivity
+                  </label>
+                  <select
+                    value={form.resource_sensitivity}
+                    onChange={(e) => setForm({ ...form, resource_sensitivity: e.target.value })}
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      padding: 11,
+                      borderRadius: 8,
+                      background: "#111827",
+                      border: "1px solid #263449",
+                      color: "#F8FAFC"
+                    }}
+                  >
+                    <option value="LOW">Low</option>
+                    <option value="NORMAL">Normal</option>
+                    <option value="HIGH">High</option>
+                    <option value="CRITICAL">Critical</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={evaluateAccess}
+              disabled={loading}
+              style={{
+                width: "100%",
+                marginTop: "22px",
+                padding: "14px",
+                border: 0,
+                borderRadius: "9px",
+                background: "#00D4FF",
+                color: "#06111C",
+                fontWeight: 800,
+                cursor: loading ? "wait" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "9px"
+              }}
+            >
+              {loading ? (
+                <>
+                  <RefreshCw size={17} />
+                  Evaluating...
+                </>
+              ) : (
+                <>
+                  <ShieldCheck size={18} />
+                  Evaluate Access
+                </>
+              )}
+            </button>
+
+            {error && (
+              <div
+                style={{
+                  marginTop: "15px",
+                  padding: "12px",
+                  borderRadius: "8px",
+                  background: "rgba(239,68,68,0.08)",
+                  border: "1px solid rgba(239,68,68,0.25)",
+                  color: "#EF4444",
+                  fontSize: "13px"
+                }}
+              >
+                {error}
+              </div>
+            )}
+          </section>
+
+          <section
+            style={{
+              background: "#111827",
+              border: "1px solid #1E293B",
+              borderRadius: "14px",
+              padding: "24px"
+            }}
+          >
+            <h2 style={{ margin: 0, fontSize: "19px" }}>
+              Zero Trust Decision
+            </h2>
+
+            <p
+              style={{
+                color: "#64748B",
+                fontSize: "13px",
+                marginTop: "6px"
+              }}
+            >
+              AI risk + identity + device + context
+            </p>
+
+            {result ? (
+              <div style={{ marginTop: "28px" }}>
+                <div
+                  style={{
+                    padding: "25px",
+                    borderRadius: "13px",
+                    textAlign: "center",
+                    background: `${decisionColor(result.decision)}10`,
+                    border: `1px solid ${decisionColor(
+                      result.decision
+                    )}35`,
+                    color: decisionColor(result.decision)
+                  }}
+                >
+                  {decisionIcon(result.decision)}
+
+                  <div
+                    style={{
+                      fontSize: "30px",
+                      fontWeight: 900,
+                      marginTop: "10px"
+                    }}
+                  >
+                    {result.decision}
+                  </div>
+
+                  <div
+                    style={{
+                      color: "#94A3B8",
+                      marginTop: "6px"
+                    }}
+                  >
+                    Risk Score: {result.risk_score}/100
+                  </div>
+                </div>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "12px",
+                    marginTop: "18px"
+                  }}
+                >
+                  <Result label="Identity" value={result.identity} />
+                  <Result label="Device" value={result.device} />
+                  <Result label="Context" value={result.context} />
+                  <Result label="Decision" value={result.decision} />
+                </div>
+
+                <div
+                  style={{
+                    marginTop: "14px",
+                    padding: "15px",
+                    background: "#0B1120",
+                    border: "1px solid #1E293B",
+                    borderRadius: "9px"
+                  }}
+                >
+                  <div
+                    style={{
+                      color: "#64748B",
+                      fontSize: "11px",
+                      fontWeight: 800,
+                      marginBottom: "7px"
+                    }}
+                  >
+                    POLICY EXPLANATION
+                  </div>
+
+                  <div
+                    style={{
+                      color: "#CBD5E1",
+                      fontSize: "13px",
+                      lineHeight: 1.6
+                    }}
+                  >
+                    {result.reason}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div
+                style={{
+                  marginTop: "35px",
+                  textAlign: "center",
+                  padding: "55px 20px",
+                  border: "1px dashed #263449",
+                  borderRadius: "12px",
+                  color: "#64748B"
+                }}
+              >
+                <ShieldCheck
+                  size={45}
+                  color="#00D4FF"
+                  style={{ marginBottom: "12px" }}
+                />
+                <div
+                  style={{
+                    color: "#CBD5E1",
+                    fontWeight: 700
+                  }}
+                >
+                  Ready for access evaluation
+                </div>
+                <div style={{ marginTop: "7px", fontSize: "13px" }}>
+                  Configure the session and evaluate the request.
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+
+        {result?.risk_breakdown && (
+          <section style={{
+            marginTop: 20,
+            padding: 22,
+            borderRadius: 14,
+            background: "#111827",
+            border: "1px solid #1E293B"
+          }}>
+            <h2 style={{ margin: 0, fontSize: 19 }}>
+              Adaptive Risk Intelligence
+            </h2>
+            <p style={{ color: "#94A3B8", fontSize: 13 }}>
+              Contribution of each security signal to the final risk score.
+            </p>
+
+            <div style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+              gap: 12,
+              marginTop: 16
+            }}>
+              {[
+                ["Original risk", "original_score"],
+                ["Device risk", "device_adjustment"],
+                ["Location risk", "location_adjustment"],
+                ["Network risk", "network_adjustment"],
+                ["Compliance risk", "compliance_adjustment"],
+                ["Device posture", "posture_adjustment"],
+                ["Failed login risk", "failed_login_adjustment"],
+                ["Behavior risk", "behavior_adjustment"],
+                ["Session risk", "session_adjustment"],
+                ["Resource sensitivity", "resource_adjustment"],
+                ["Total adjustment", "total_adjustment"],
+                ["Final risk score", "final_score"]
+              ].filter(([, key]) =>
+                result.risk_breakdown[key] !== undefined
+              ).map(([label, key]) => (
+                <div key={key} style={{
+                  padding: 14,
+                  borderRadius: 9,
+                  background: "#0B1120",
+                  border: "1px solid #263449"
+                }}>
+                  <div style={{ color: "#94A3B8", fontSize: 11, fontWeight: 700 }}>
+                    {label.toUpperCase()}
+                  </div>
+                  <div style={{
+                    marginTop: 7,
+                    color: key === "final_score" ? "#F87171" : "#67E8F9",
+                    fontSize: 23,
+                    fontWeight: 800
+                  }}>
+                    {result.risk_breakdown[key]}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{
+              marginTop: 15,
+              padding: 13,
+              borderRadius: 8,
+              background: "#0B1120",
+              color: "#94A3B8",
+              fontSize: 12
+            }}>
+              Final score is capped at 100. Access decisions follow the backend policy thresholds.
+            </div>
+          </section>
+        )}
+
+        <DevicePostureCenter
+          onPostureChange={(score) =>
+            setForm(previous => ({
+              ...previous,
+              device_posture_score: score,
+              device_compliant: score >= 75
+            }))
+          }
+        />
+
+        <SessionRiskMonitor />
+        <ZeroTrustPolicyWorkbench />
+
+        <section
+          style={{
+            marginTop: "20px",
+            background: "#111827",
+            border: "1px solid #1E293B",
+            borderRadius: "14px",
+            padding: "22px"
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: "18px" }}>
+            Zero Trust Principles
+          </h2>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(4, 1fr)",
+              gap: "14px",
+              marginTop: "18px"
+            }}
+          >
+            <Principle icon={<UserCheck />} title="Verify Identity" />
+            <Principle icon={<MonitorCheck />} title="Trust Device" />
+            <Principle icon={<Activity />} title="Assess Risk" />
+            <Principle icon={<LockKeyhole />} title="Least Privilege" />
+          </div>
+        </section>
+      </div>
+      </div>
+    
+        {/* SENTINELAI_ZERO_TRUST_AUDIT */}
+        <ZeroTrustAuditPanel
+          result={result}
+          form={form}
+          loading={loading}
+          onReevaluate={evaluateAccess}
+        />
+</PageLayout>
+  );
+}
+
+
+
+function DevicePostureCenter({ onPostureChange }) {
+  const initialDevices = [
+    {
+      id: "DEV-001",
+      name: "MacBook-Air",
+      owner: "admin",
+      os: "macOS",
+      encryption: true,
+      endpoint: true,
+      patched: true,
+      firewall: true,
+      quarantined: false
+    },
+    {
+      id: "DEV-002",
+      name: "Windows-Workstation",
+      owner: "analyst",
+      os: "Windows",
+      encryption: true,
+      endpoint: true,
+      patched: false,
+      firewall: true,
+      quarantined: false
+    },
+    {
+      id: "DEV-003",
+      name: "Unknown-Endpoint",
+      owner: "unassigned",
+      os: "Unknown",
+      encryption: false,
+      endpoint: false,
+      patched: false,
+      firewall: false,
+      quarantined: false
+    }
+  ];
+
+  const [devices, setDevices] = useState(() => {
+    try {
+      const saved = localStorage.getItem("sentinelai_device_posture");
+      return saved ? JSON.parse(saved) : initialDevices;
+    } catch {
+      return initialDevices;
+    }
+  });
+
+  const [selected, setSelected] = useState("DEV-001");
+  const [notice, setNotice] = useState("");
+
+  const scoreDevice = (device) => {
+    return [
+      device.encryption,
+      device.endpoint,
+      device.patched,
+      device.firewall
+    ].filter(Boolean).length * 25;
+  };
+
+  const persist = (updated) => {
+    setDevices(updated);
+    try {
+      localStorage.setItem("sentinelai_device_posture", JSON.stringify(updated));
+    } catch {
+      setNotice("Unable to save device inventory in this browser.");
+    }
+  };
+
+  const updateDevice = (id, field, value) => {
+    const updated = devices.map(device =>
+      device.id === id ? { ...device, [field]: value } : device
+    );
+    persist(updated);
+    setNotice("Device posture updated.");
+  };
+
+  const selectedDevice = devices.find(device => device.id === selected);
+
+  useEffect(() => {
+    if (selectedDevice && onPostureChange) {
+      onPostureChange(scoreDevice(selectedDevice));
+    }
+  }, [
+    selectedDevice?.id,
+    selectedDevice?.encryption,
+    selectedDevice?.endpoint,
+    selectedDevice?.patched,
+    selectedDevice?.firewall
+  ]);
+
+  const compliant = devices.filter(device =>
+    scoreDevice(device) >= 75 && !device.quarantined
+  ).length;
+
+  const atRisk = devices.filter(device =>
+    scoreDevice(device) < 75 && !device.quarantined
+  ).length;
+
+  const quarantined = devices.filter(device => device.quarantined).length;
+
+  const labelFor = (device) => {
+    const score = scoreDevice(device);
+    if (device.quarantined) return "QUARANTINED";
+    if (score >= 75) return "COMPLIANT";
+    if (score >= 50) return "AT RISK";
+    return "NON-COMPLIANT";
+  };
+
+  const statusColor = (device) => {
+    if (device.quarantined || scoreDevice(device) < 50) return "#F87171";
+    if (scoreDevice(device) < 75) return "#FBBF24";
+    return "#4ADE80";
+  };
+
+  const panel = {
+    background: "#0B1120",
+    border: "1px solid #263449",
+    borderRadius: 10,
+    padding: 16
+  };
+
+  const checks = [
+    ["encryption", "Disk encryption"],
+    ["endpoint", "Endpoint protection"],
+    ["patched", "Security patches"],
+    ["firewall", "Host firewall"]
+  ];
+
+  return (
+    <section style={{
+      marginTop: 22,
+      padding: 22,
+      borderRadius: 14,
+      background: "#111827",
+      border: "1px solid #1E293B",
+      color: "#E2E8F0"
+    }}>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{
+          color: "#67E8F9",
+          fontSize: 11,
+          fontWeight: 800,
+          letterSpacing: 1.5
+        }}>
+          ENDPOINT SECURITY INTELLIGENCE
+        </div>
+        <h2 style={{ margin: "7px 0", fontSize: 21 }}>
+          Device Posture Center
+        </h2>
+        <p style={{ color: "#94A3B8", fontSize: 13 }}>
+          Assess device compliance before granting resource access.
+        </p>
+      </div>
+
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(145px, 1fr))",
+        gap: 12
+      }}>
+        {[
+          ["Total devices", devices.length, "#67E8F9"],
+          ["Compliant", compliant, "#4ADE80"],
+          ["At risk", atRisk, "#FBBF24"],
+          ["Quarantined", quarantined, "#F87171"]
+        ].map(([label, value, color]) => (
+          <div key={label} style={panel}>
+            <div style={{ color: "#94A3B8", fontSize: 12 }}>{label}</div>
+            <div style={{ fontSize: 27, fontWeight: 900, color, marginTop: 7 }}>
+              {value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+        gap: 16,
+        marginTop: 18
+      }}>
+        <div style={panel}>
+          <h3 style={{ marginTop: 0 }}>Device Inventory</h3>
+
+          {devices.map(device => (
+            <button
+              type="button"
+              key={device.id}
+              onClick={() => {
+                setSelected(device.id);
+                setNotice("");
+              }}
+              style={{
+                width: "100%",
+                textAlign: "left",
+                padding: 13,
+                marginBottom: 9,
+                borderRadius: 8,
+                cursor: "pointer",
+                background: selected === device.id ? "#172B3D" : "#111827",
+                border: selected === device.id
+                  ? "1px solid #0891B2"
+                  : "1px solid #263449",
+                color: "#E2E8F0"
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <strong>{device.name}</strong>
+                <span style={{
+                  color: statusColor(device),
+                  fontSize: 10,
+                  fontWeight: 900
+                }}>
+                  {labelFor(device)}
+                </span>
+              </div>
+              <div style={{ color: "#94A3B8", fontSize: 11, marginTop: 7 }}>
+                {device.id} · {device.os} · {device.owner}
+              </div>
+              <div style={{ color: "#67E8F9", fontSize: 12, marginTop: 8 }}>
+                Posture score: {scoreDevice(device)}/100
+              </div>
+            </button>
+          ))}
+        </div>
+
+        <div style={panel}>
+          <h3 style={{ marginTop: 0 }}>Device Security Assessment</h3>
+
+          {selectedDevice && (
+            <>
+              <div style={{ color: "#67E8F9", fontWeight: 800 }}>
+                {selectedDevice.name}
+              </div>
+              <div style={{ color: "#94A3B8", fontSize: 12, marginTop: 5 }}>
+                {selectedDevice.id} · {selectedDevice.os}
+              </div>
+
+              <div style={{
+                marginTop: 17,
+                padding: 16,
+                borderRadius: 9,
+                background: "#111827",
+                textAlign: "center"
+              }}>
+                <div style={{
+                  fontSize: 36,
+                  fontWeight: 900,
+                  color: statusColor(selectedDevice)
+                }}>
+                  {scoreDevice(selectedDevice)}
+                  <span style={{ fontSize: 14 }}>/100</span>
+                </div>
+                <div style={{ color: "#94A3B8", fontSize: 11 }}>
+                  DEVICE POSTURE SCORE
+                </div>
+                <div style={{
+                  height: 8,
+                  borderRadius: 10,
+                  background: "#263449",
+                  marginTop: 12,
+                  overflow: "hidden"
+                }}>
+                  <div style={{
+                    height: "100%",
+                    width: `${scoreDevice(selectedDevice)}%`,
+                    background: statusColor(selectedDevice),
+                    transition: "width 0.2s"
+                  }} />
+                </div>
+              </div>
+
+              <div style={{ marginTop: 18 }}>
+                <div style={{ color: "#94A3B8", fontSize: 11, fontWeight: 800, marginBottom: 8 }}>
+                  SECURITY COMPLIANCE CHECKLIST
+                </div>
+
+                {checks.map(([field, label]) => (
+                  <div key={field} style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "12px 0",
+                    borderBottom: "1px solid #263449"
+                  }}>
+                    <span style={{ fontSize: 13 }}>{label}</span>
+                    <button
+                      type="button"
+                      disabled={selectedDevice.quarantined}
+                      onClick={() => updateDevice(
+                        selectedDevice.id,
+                        field,
+                        !selectedDevice[field]
+                      )}
+                      style={{
+                        padding: "7px 10px",
+                        borderRadius: 7,
+                        border: "1px solid #334155",
+                        background: selectedDevice[field] ? "#123329" : "#351D25",
+                        color: selectedDevice[field] ? "#4ADE80" : "#F87171",
+                        cursor: selectedDevice.quarantined ? "not-allowed" : "pointer",
+                        fontSize: 11,
+                        fontWeight: 800
+                      }}
+                    >
+                      {selectedDevice[field] ? "PASS" : "FAIL"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{
+                display: "flex",
+                gap: 9,
+                flexWrap: "wrap",
+                marginTop: 17
+              }}>
+                {!selectedDevice.quarantined && scoreDevice(selectedDevice) < 50 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateDevice(selectedDevice.id, "quarantined", true);
+                      setNotice("Local quarantine state enabled for this simulated device.");
+                    }}
+                    style={{
+                      padding: 11,
+                      border: 0,
+                      borderRadius: 8,
+                      background: "#991B1B",
+                      color: "white",
+                      cursor: "pointer",
+                      fontWeight: 800
+                    }}
+                  >
+                    Recommend quarantine
+                  </button>
+                )}
+
+                {selectedDevice.quarantined && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      updateDevice(selectedDevice.id, "quarantined", false);
+                      setNotice("Local quarantine simulation released.");
+                    }}
+                    style={{
+                      padding: 11,
+                      border: 0,
+                      borderRadius: 8,
+                      background: "#166534",
+                      color: "white",
+                      cursor: "pointer",
+                      fontWeight: 800
+                    }}
+                  >
+                    Release simulation
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updated = devices.map(device =>
+                      device.id === selectedDevice.id
+                        ? { ...device, encryption: false, endpoint: false, patched: false, firewall: false, quarantined: false }
+                        : device
+                    );
+                    persist(updated);
+                    setNotice("Selected device reset to a non-compliant test state.");
+                  }}
+                  style={{
+                    padding: 11,
+                    border: "1px solid #334155",
+                    borderRadius: 8,
+                    background: "#1E293B",
+                    color: "#E2E8F0",
+                    cursor: "pointer"
+                  }}
+                >
+                  Reset test posture
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {notice && (
+        <div style={{
+          marginTop: 15,
+          padding: 12,
+          borderRadius: 8,
+          background: "#172B3D",
+          color: "#BAE6FD",
+          fontSize: 12
+        }}>
+          {notice}
+        </div>
+      )}
+
+      <p style={{
+        color: "#64748B",
+        fontSize: 11,
+        lineHeight: 1.6,
+        marginTop: 17
+      }}>
+        Demonstration inventory with browser-local persistence. Device scores are based on four simulated checks worth 25 points each. Quarantine changes only this dashboard's local state and does not isolate a real endpoint.
+      </p>
+    </section>
+  );
+}
+
+function ZeroTrustPolicyWorkbench() {
+  const [risk, setRisk] = useState(20);
+  const [threshold, setThreshold] = useState(60);
+  const [identity, setIdentity] = useState(true);
+  const [device, setDevice] = useState(true);
+  const [network, setNetwork] = useState(true);
+  const [role, setRole] = useState("Security Analyst");
+  const [resource, setResource] = useState("Threat Analytics");
+  const [simulation, setSimulation] = useState(null);
+
+  const permissions = {
+    Admin: ["Security Dashboard", "Threat Analytics", "Firewall Rules", "User Management"],
+    "Security Analyst": ["Security Dashboard", "Threat Analytics"],
+    Viewer: ["Security Dashboard"]
+  };
+
+  function simulate() {
+    let score = Number(risk);
+    const reasons = [];
+
+    if (!identity) {
+      score = 100;
+      reasons.push("Identity verification failed.");
+    } else {
+      if (!device) {
+        score += 25;
+        reasons.push("Untrusted device: +25 risk.");
+      }
+      if (!network) {
+        score += 15;
+        reasons.push("Untrusted network: +15 risk.");
+      }
+    }
+
+    score = Math.min(score, 100);
+
+    const roleAllowed = permissions[role].includes(resource);
+    let decision;
+
+    if (!identity || score >= threshold || !roleAllowed) {
+      decision = "BLOCK";
+    } else if (score >= 30) {
+      decision = "MFA";
+    } else {
+      decision = "ALLOW";
+    }
+
+    if (!roleAllowed) {
+      reasons.push(`${role} does not have permission for ${resource}.`);
+    }
+    if (score >= threshold) {
+      reasons.push(`Risk score reached the block threshold of ${threshold}.`);
+    }
+    if (decision === "MFA") {
+      reasons.push("Additional authentication is required.");
+    }
+    if (decision === "ALLOW") {
+      reasons.push("Identity, device, network and role checks passed.");
+    }
+
+    setSimulation({ score, decision, reasons, roleAllowed });
+  }
+
+  const color = simulation?.decision === "ALLOW"
+    ? "#22C55E"
+    : simulation?.decision === "MFA"
+      ? "#F59E0B"
+      : "#EF4444";
+
+  const card = {
+    background: "#0B1120",
+    border: "1px solid #263449",
+    borderRadius: 10,
+    padding: 16
+  };
+
+  const selectStyle = {
+    width: "100%",
+    padding: 11,
+    borderRadius: 8,
+    background: "#111827",
+    border: "1px solid #334155",
+    color: "#E2E8F0"
+  };
+
+  return (
+    <section style={{
+      marginTop: 22,
+      padding: 22,
+      borderRadius: 14,
+      background: "#111827",
+      border: "1px solid #1E293B",
+      color: "#E2E8F0"
+    }}>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{
+          color: "#67E8F9",
+          fontSize: 11,
+          fontWeight: 800,
+          letterSpacing: 1.5
+        }}>
+          ADVANCED ACCESS GOVERNANCE
+        </div>
+        <h2 style={{ margin: "7px 0", fontSize: 21 }}>
+          Zero Trust Policy Workbench
+        </h2>
+        <p style={{ color: "#94A3B8", fontSize: 13 }}>
+          Simulate adaptive access decisions and inspect role permissions.
+        </p>
+      </div>
+
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+        gap: 16
+      }}>
+        <div style={card}>
+          <h3 style={{ marginTop: 0 }}>Policy Simulator</h3>
+
+          <label style={{ display: "block", color: "#94A3B8", fontSize: 12 }}>
+            Initial risk score: {risk}/100
+          </label>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value={risk}
+            onChange={e => setRisk(Number(e.target.value))}
+            style={{ width: "100%", accentColor: "#00D4FF" }}
+          />
+
+          <label style={{ display: "block", marginTop: 15, color: "#94A3B8", fontSize: 12 }}>
+            Block threshold: {threshold}
+          </label>
+          <input
+            type="range"
+            min="30"
+            max="100"
+            step="5"
+            value={threshold}
+            onChange={e => setThreshold(Number(e.target.value))}
+            style={{ width: "100%", accentColor: "#00D4FF" }}
+          />
+
+          <div style={{ display: "grid", gap: 10, marginTop: 18 }}>
+            <Toggle label="Identity verified" checked={identity} onChange={setIdentity} />
+            <Toggle label="Trusted device" checked={device} onChange={setDevice} />
+            <Toggle label="Trusted network" checked={network} onChange={setNetwork} />
+          </div>
+
+          <button
+            onClick={simulate}
+            style={{
+              width: "100%",
+              marginTop: 18,
+              padding: 13,
+              border: 0,
+              borderRadius: 8,
+              background: "#00D4FF",
+              color: "#06111C",
+              fontWeight: 800,
+              cursor: "pointer"
+            }}
+          >
+            Simulate Access Policy
+          </button>
+
+          {simulation && (
+            <div style={{
+              marginTop: 16,
+              padding: 15,
+              borderRadius: 9,
+              background: `${color}12`,
+              border: `1px solid ${color}55`
+            }}>
+              <div style={{ color, fontSize: 22, fontWeight: 900 }}>
+                {simulation.decision}
+              </div>
+              <div style={{ marginTop: 5 }}>
+                Simulated risk: {simulation.score}/100
+              </div>
+              <ul style={{
+                paddingLeft: 19,
+                color: "#CBD5E1",
+                fontSize: 12,
+                lineHeight: 1.8
+              }}>
+                {simulation.reasons.map((reason, index) => (
+                  <li key={index}>{reason}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        <div style={card}>
+          <h3 style={{ marginTop: 0 }}>Role-Based Access Control</h3>
+
+          <label style={{ display: "block", color: "#94A3B8", fontSize: 12, marginBottom: 7 }}>
+            Select user role
+          </label>
+          <select value={role} onChange={e => {
+            setRole(e.target.value);
+            setSimulation(null);
+          }} style={selectStyle}>
+            {Object.keys(permissions).map(item => (
+              <option key={item}>{item}</option>
+            ))}
+          </select>
+
+          <label style={{ display: "block", color: "#94A3B8", fontSize: 12, margin: "16px 0 7px" }}>
+            Requested resource
+          </label>
+          <select value={resource} onChange={e => {
+            setResource(e.target.value);
+            setSimulation(null);
+          }} style={selectStyle}>
+            {[
+              "Security Dashboard",
+              "Threat Analytics",
+              "Firewall Rules",
+              "User Management"
+            ].map(item => (
+              <option key={item}>{item}</option>
+            ))}
+          </select>
+
+          <div style={{ marginTop: 18 }}>
+            <div style={{ color: "#94A3B8", fontSize: 12, marginBottom: 10 }}>
+              ROLE PERMISSIONS
+            </div>
+            {[
+              "Security Dashboard",
+              "Threat Analytics",
+              "Firewall Rules",
+              "User Management"
+            ].map(item => {
+              const allowed = permissions[role].includes(item);
+              return (
+                <div key={item} style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  padding: "11px 0",
+                  borderBottom: "1px solid #263449",
+                  fontSize: 13
+                }}>
+                  <span>{item}</span>
+                  <span style={{
+                    color: allowed ? "#4ADE80" : "#F87171",
+                    fontWeight: 800
+                  }}>
+                    {allowed ? "PERMITTED" : "DENIED"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div style={{
+            marginTop: 16,
+            padding: 12,
+            borderRadius: 8,
+            background: "#172B29",
+            color: "#86EFAC",
+            fontSize: 12
+          }}>
+            Least-privilege simulation: users receive only the permissions assigned to their selected role.
+          </div>
+        </div>
+      </div>
+
+      <p style={{ color: "#64748B", fontSize: 11, marginTop: 16, lineHeight: 1.6 }}>
+        Simulation only. These local test policies do not modify backend access rules, user accounts or real permissions.
+      </p>
+    </section>
+  );
+}
+
+function Field({ icon, label, value, onChange }) {
+  return (
+    <div>
+      <label
+        style={{
+          display: "block",
+          color: "#94A3B8",
+          fontSize: "12px",
+          fontWeight: 700,
+          marginBottom: "7px"
+        }}
+      >
+        {label}
+      </label>
+
+      <div style={{ position: "relative" }}>
+        <span
+          style={{
+            position: "absolute",
+            left: "12px",
+            top: "50%",
+            transform: "translateY(-50%)",
+            color: "#64748B"
+          }}
+        >
+          {icon}
+        </span>
+
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            background: "#0B1120",
+            border: "1px solid #263449",
+            borderRadius: "8px",
+            padding: "11px 12px 11px 39px",
+            color: "#F8FAFC",
+            outline: "none"
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function Toggle({ label, checked, onChange }) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      style={{
+        background: "#0B1120",
+        border: "1px solid #263449",
+        borderRadius: "9px",
+        padding: "13px",
+        color: "#CBD5E1",
+        display: "flex",
+        alignItems: "center",
+        gap: "10px",
+        cursor: "pointer",
+        textAlign: "left"
+      }}
+    >
+      <span
+        style={{
+          width: "19px",
+          height: "19px",
+          borderRadius: "5px",
+          background: checked ? "#22C55E" : "#1E293B",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#06111C",
+          fontSize: "12px",
+          fontWeight: 900
+        }}
+      >
+        {checked ? "✓" : ""}
+      </span>
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function Result({ label, value }) {
+  return (
+    <div
+      style={{
+        padding: "12px",
+        background: "#0B1120",
+        border: "1px solid #1E293B",
+        borderRadius: "8px"
+      }}
+    >
+      <div
+        style={{
+          color: "#64748B",
+          fontSize: "10px",
+          fontWeight: 800,
+          marginBottom: "5px"
+        }}
+      >
+        {label.toUpperCase()}
+      </div>
+      <div style={{ color: "#E2E8F0", fontSize: "13px" }}>
+        {value ?? "N/A"}
+      </div>
+    </div>
+  );
+}
+
+function Principle({ icon, title }) {
+  return (
+    <div
+      style={{
+        padding: "16px",
+        borderRadius: "9px",
+        background: "#0B1120",
+        border: "1px solid #1E293B",
+        display: "flex",
+        alignItems: "center",
+        gap: "10px",
+        color: "#00D4FF"
+      }}
+    >
+      {icon}
+      <span style={{ color: "#CBD5E1", fontWeight: 700 }}>
+        {title}
+      </span>
+    </div>
+  );
+}
+
+
+function ZeroTrustAuditPanel({ result, form, loading, onReevaluate }) {
+  const STORAGE_KEY = "sentinelai_zero_trust_audit";
+
+  const [history, setHistory] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    } catch {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    if (!result) return;
+
+    const entry = {
+      id: `${Date.now()}-${Math.random()}`,
+      time: new Date().toISOString(),
+      user: form.user,
+      device: form.device,
+      resource: form.resource,
+      decision: result.decision || result.action || "UNKNOWN",
+      risk: result.risk_score ?? form.risk_score,
+      reason: result.reason || result.message || "See evaluation result"
+    };
+
+    setHistory((previous) => {
+      const updated = [entry, ...previous].slice(0, 50);
+
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+      } catch (error) {
+        console.error("Unable to save Zero Trust history:", error);
+      }
+
+      return updated;
+    });
+  }, [result]);
+
+  function exportHistory() {
+    if (!history.length) return;
+
+    const columns = [
+      "time", "user", "device", "resource", "decision", "risk", "reason"
+    ];
+
+    const escapeCSV = (value) =>
+      '"' + String(value ?? "").replace(/"/g, '""') + '"';
+
+    const csv = [
+      columns.join(","),
+      ...history.map((entry) =>
+        columns.map((column) => escapeCSV(entry[column])).join(",")
+      )
+    ].join("\n");
+
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "sentinelai-zero-trust-audit.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function clearHistory() {
+    if (!window.confirm("Clear the locally stored Zero Trust audit history?")) {
+      return;
+    }
+
+    setHistory([]);
+    localStorage.removeItem(STORAGE_KEY);
+  }
+
+  const decisionColor = (decision) => {
+    if (decision === "ALLOW") return "#4ADE80";
+    if (decision === "MFA") return "#FBBF24";
+    if (decision === "LIMIT") return "#FB923C";
+    return "#F87171";
+  };
+
+  return (
+    <section style={{
+      marginTop: 22,
+      padding: 22,
+      borderRadius: 14,
+      background: "#111827",
+      border: "1px solid #263449",
+      color: "#E2E8F0"
+    }}>
+      <div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 12
+      }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 19 }}>
+            Session Assurance & Audit History
+          </h2>
+          <p style={{ color: "#94A3B8", fontSize: 13 }}>
+            Reassess the current access request and review recent decisions.
+          </p>
+        </div>
+
+        <span style={{ color: "#67E8F9", fontSize: 13 }}>
+          {history.length} recorded decisions
+        </span>
+      </div>
+
+      <div style={{
+        display: "flex",
+        gap: 10,
+        flexWrap: "wrap",
+        margin: "16px 0"
+      }}>
+        <button
+          type="button"
+          onClick={onReevaluate}
+          disabled={loading}
+          style={{
+            padding: "10px 14px",
+            border: 0,
+            borderRadius: 8,
+            background: "#0891B2",
+            color: "#FFFFFF",
+            fontWeight: 700,
+            cursor: loading ? "not-allowed" : "pointer"
+          }}
+        >
+          {loading ? "Reassessing..." : "Reassess current session"}
+        </button>
+
+        <button
+          type="button"
+          onClick={exportHistory}
+          disabled={!history.length}
+          style={{
+            padding: "10px 14px",
+            border: "1px solid #334155",
+            borderRadius: 8,
+            background: "#1E293B",
+            color: "#E2E8F0",
+            cursor: "pointer"
+          }}
+        >
+          Export audit CSV
+        </button>
+
+        <button
+          type="button"
+          onClick={clearHistory}
+          disabled={!history.length}
+          style={{
+            padding: "10px 14px",
+            border: "1px solid #7F1D1D",
+            borderRadius: 8,
+            background: "#291820",
+            color: "#FCA5A5",
+            cursor: "pointer"
+          }}
+        >
+          Clear history
+        </button>
+      </div>
+
+      {!history.length ? (
+        <p style={{ color: "#94A3B8", fontSize: 13 }}>
+          No decisions recorded yet. Evaluate access to start building the audit history.
+        </p>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            fontSize: 13,
+            minWidth: 620
+          }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: "#67E8F9" }}>
+                {["Time", "User", "Device", "Decision", "Risk"].map((heading) => (
+                  <th key={heading} style={{
+                    padding: 11,
+                    borderBottom: "1px solid #334155"
+                  }}>
+                    {heading}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((entry) => (
+                <tr key={entry.id}>
+                  <td style={{ padding: 11, borderBottom: "1px solid #263449" }}>
+                    {new Date(entry.time).toLocaleString()}
+                  </td>
+                  <td style={{ padding: 11, borderBottom: "1px solid #263449" }}>
+                    {entry.user}
+                  </td>
+                  <td style={{ padding: 11, borderBottom: "1px solid #263449" }}>
+                    {entry.device}
+                  </td>
+                  <td style={{
+                    padding: 11,
+                    borderBottom: "1px solid #263449",
+                    color: decisionColor(entry.decision),
+                    fontWeight: 800
+                  }}>
+                    {entry.decision}
+                  </td>
+                  <td style={{ padding: 11, borderBottom: "1px solid #263449" }}>
+                    {entry.risk}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p style={{
+        color: "#64748B",
+        fontSize: 12,
+        marginTop: 15,
+        lineHeight: 1.6
+      }}>
+        Audit history is stored locally in this browser and limited to the latest
+        50 decisions. Reassessment calls the existing Zero Trust API. This is not
+        a background session monitor or a server-side immutable audit log.
+      </p>
+    </section>
+  );
+}

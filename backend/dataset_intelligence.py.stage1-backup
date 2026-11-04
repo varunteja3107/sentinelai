@@ -1,0 +1,174 @@
+import numpy as np
+import pandas as pd
+
+
+LABEL_CANDIDATES = {
+    "label", "class", "attack", "attack_type",
+    "attack type", "category", "target"
+}
+
+
+def profile_dataset(file_path, max_rows=200_000):
+    """Generate bounded, evidence-based CSV quality and feature profiling."""
+
+    if not 100 <= max_rows <= 500_000:
+        raise ValueError("max_rows must be between 100 and 500000.")
+
+    frame = pd.read_csv(file_path, nrows=max_rows, low_memory=False)
+    frame.columns = [str(column).strip() for column in frame.columns]
+
+    if frame.empty:
+        raise ValueError("The CSV contains no data rows.")
+
+    rows = len(frame)
+    columns = len(frame.columns)
+
+    missing = frame.isna().sum()
+    duplicate_rows = int(frame.duplicated().sum())
+
+    numeric = frame.select_dtypes(include="number")
+    numeric_profile = {}
+    infinite_counts = {}
+    constant_columns = []
+    low_variance_columns = []
+
+    for column in numeric.columns:
+        series = numeric[column].replace([np.inf, -np.inf], np.nan)
+        values = series.dropna()
+
+        infinite_counts[str(column)] = int(
+            np.isinf(numeric[column].to_numpy(dtype=float)).sum()
+        )
+
+        if values.nunique() <= 1:
+            constant_columns.append(str(column))
+
+        variance = float(values.var()) if len(values) > 1 else 0.0
+
+        if 0 < variance < 0.000001:
+            low_variance_columns.append(str(column))
+
+        numeric_profile[str(column)] = {
+            "valid_values": int(values.count()),
+            "missing_values": int(series.isna().sum()),
+            "mean": float(values.mean()) if len(values) else None,
+            "median": float(values.median()) if len(values) else None,
+            "std": float(values.std()) if len(values) > 1 else 0.0,
+            "min": float(values.min()) if len(values) else None,
+            "max": float(values.max()) if len(values) else None,
+            "variance": variance,
+            "unique_values": int(values.nunique()),
+        }
+
+    label_column = next(
+        (
+            column for column in frame.columns
+            if column.lower() in LABEL_CANDIDATES
+        ),
+        None,
+    )
+
+    label_distribution = {}
+    imbalance_ratio = None
+    imbalance_warning = False
+
+    if label_column:
+        labels = frame[label_column].dropna().astype(str).str.strip()
+        counts = labels.value_counts()
+
+        label_distribution = {
+            str(label): int(count)
+            for label, count in counts.head(100).items()
+        }
+
+        if len(counts) > 1 and counts.min() > 0:
+            imbalance_ratio = round(
+                float(counts.max() / counts.min()), 3
+            )
+            imbalance_warning = imbalance_ratio >= 5
+
+    categorical_profile = {}
+
+    for column in frame.select_dtypes(
+        include=["object", "category", "bool"]
+    ).columns:
+        values = frame[column].dropna()
+
+        categorical_profile[str(column)] = {
+            "unique_values": int(values.nunique()),
+            "top_values": {
+                str(key): int(value)
+                for key, value in values.value_counts().head(10).items()
+            },
+        }
+
+    missing_profile = {
+        str(column): {
+            "count": int(missing[column]),
+            "percentage": round(float(missing[column] / rows * 100), 3),
+        }
+        for column in frame.columns
+        if missing[column] > 0
+    }
+
+    leakage_warnings = []
+    if label_column:
+        for column in frame.columns:
+            if column == label_column:
+                continue
+
+            name = column.lower().replace(" ", "_")
+            if any(term in name for term in (
+                "target", "label", "attack_type", "class"
+            )):
+                leakage_warnings.append({
+                    "column": str(column),
+                    "reason": "Column name may encode target information. Verify before training.",
+                })
+
+    total_missing = int(missing.sum())
+    total_infinite = int(sum(infinite_counts.values()))
+
+    warnings = []
+
+    if total_missing:
+        warnings.append("Missing values detected.")
+
+    if duplicate_rows:
+        warnings.append("Duplicate rows detected.")
+
+    if total_infinite:
+        warnings.append("Infinite numeric values detected.")
+
+    if constant_columns:
+        warnings.append("Constant numeric features detected.")
+
+    if imbalance_warning:
+        warnings.append("Potential class imbalance detected.")
+
+    return {
+        "status": "completed",
+        "rows_analyzed": int(rows),
+        "columns_analyzed": int(columns),
+        "analysis_limit": int(max_rows),
+        "truncated": bool(rows == max_rows),
+        "duplicate_rows": duplicate_rows,
+        "missing_values_total": total_missing,
+        "missing_by_column": missing_profile,
+        "infinite_values_total": total_infinite,
+        "infinite_by_column": infinite_counts,
+        "numeric_features": numeric_profile,
+        "categorical_features": categorical_profile,
+        "constant_columns": constant_columns,
+        "low_variance_columns": low_variance_columns,
+        "label_column": label_column,
+        "label_distribution": label_distribution,
+        "class_imbalance_ratio": imbalance_ratio,
+        "class_imbalance_warning": imbalance_warning,
+        "potential_leakage_warnings": leakage_warnings,
+        "warnings": warnings,
+        "note": (
+            "Profiling describes the analyzed CSV sample. "
+            "Potential leakage warnings require human verification."
+        ),
+    }

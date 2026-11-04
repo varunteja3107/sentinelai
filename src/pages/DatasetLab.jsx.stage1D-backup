@@ -1,0 +1,737 @@
+import { useState } from "react";
+import {
+  Upload,
+  FileSpreadsheet,
+  AlertCircle,
+  RefreshCw,
+  Brain,
+  Download,
+} from "lucide-react";
+import PageLayout from "../components/PageLayout";
+import { API_BASE as API } from "../api";
+
+const panel = {
+  background: "#0F172A",
+  border: "1px solid #263449",
+  borderRadius: 14,
+  padding: 20,
+  minWidth: 0,
+  color: "#E2E8F0",
+};
+
+const muted = { color: "#94A3B8", fontSize: 13 };
+
+const button = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "11px 16px",
+  borderRadius: 9,
+  border: 0,
+  background: "#06B6D4",
+  color: "#06202A",
+  fontWeight: 800,
+  cursor: "pointer",
+};
+
+const secondaryButton = {
+  ...button,
+  background: "#A7F3D0",
+};
+
+const metricNames = [
+  ["accuracy", "Accuracy"],
+  ["weighted_precision", "Weighted precision"],
+  ["weighted_recall", "Weighted recall"],
+  ["weighted_f1", "Weighted F1-score"],
+  ["macro_false_positive_rate", "Macro false-positive rate"],
+];
+
+export default function DatasetLab() {
+  const [file, setFile] = useState(null);
+  const [data, setData] = useState(null);
+  const [evaluation, setEvaluation] = useState(null);
+  const [labelColumn, setLabelColumn] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [evaluating, setEvaluating] = useState(false);
+  const [intelligence, setIntelligence] = useState(null);
+  const [intelligenceLoading, setIntelligenceLoading] = useState(false);
+
+  function chooseFile(event) {
+    const chosen = event.target.files?.[0] || null;
+    setFile(chosen);
+    setData(null);
+    setEvaluation(null);
+    setIntelligence(null);
+    setError("");
+
+    if (chosen && !chosen.name.toLowerCase().endsWith(".csv")) {
+      setError("Please select a CSV file.");
+    } else if (chosen && chosen.size > 10 * 1024 * 1024 * 1024) {
+      setError("The file exceeds the 10 GiB preview limit.");
+    }
+  }
+
+  async function upload() {
+    if (!file) {
+      setError("Choose a CSV file first.");
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    setData(null);
+
+    try {
+      const body = new FormData();
+      body.append("file", file);
+
+      const response = await fetch(`${API}/api/datasets/preview`, {
+        method: "POST",
+        body,
+      });
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || "Dataset preview failed.");
+      }
+
+      setData(result);
+      if (result.label_column && !labelColumn) {
+        setLabelColumn(result.label_column);
+      }
+    } catch (e) {
+      setError(`${e.message || "Upload failed."} Check that the backend is running.`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runDatasetIntelligence() {
+    if (!file) {
+      setError("Choose a CSV dataset first.");
+      return;
+    }
+
+    if (file.size > 100 * 1024 * 1024) {
+      setError("Dataset intelligence supports CSV files up to 100 MiB.");
+      return;
+    }
+
+    setIntelligenceLoading(true);
+    setError("");
+    setIntelligence(null);
+
+    try {
+      const body = new FormData();
+      body.append("file", file);
+
+      const response = await fetch(`${API}/api/datasets/intelligence`, {
+        method: "POST",
+        body,
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.detail || "Dataset intelligence analysis failed.");
+      }
+
+      setIntelligence(result);
+    } catch (e) {
+      setError(`${e.message || "Analysis failed."} Check that the backend is running.`);
+    } finally {
+      setIntelligenceLoading(false);
+    }
+  }
+
+  async function runEvaluation() {
+    if (!file) {
+      setError("Choose a labelled CSV file first.");
+      return;
+    }
+
+    if (file.size > 100 * 1024 * 1024) {
+      setError("Model evaluation supports CSV files up to 100 MiB.");
+      return;
+    }
+
+    setEvaluating(true);
+    setError("");
+    setEvaluation(null);
+
+    try {
+      const body = new FormData();
+      body.append("file", file);
+
+      const query = labelColumn.trim()
+        ? `?label_column=${encodeURIComponent(labelColumn.trim())}`
+        : "";
+
+      const response = await fetch(
+        `${API}/api/datasets/evaluate${query}`,
+        { method: "POST", body }
+      );
+
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || "Model evaluation failed.");
+      }
+
+      setEvaluation(result);
+    } catch (e) {
+      setError(`${e.message || "Evaluation failed."} Check that the backend is running.`);
+    } finally {
+      setEvaluating(false);
+    }
+  }
+
+  return (
+    <PageLayout
+      title="Dataset Lab"
+      subtitle="Inspect network datasets and evaluate a classifier on labelled traffic"
+    >
+      <div style={{ display: "grid", gap: 18, color: "#E2E8F0" }}>
+        <section
+          style={{
+            ...panel,
+            background: "linear-gradient(135deg,#0F172A,#102A3A)",
+          }}
+        >
+          <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 18 }}>
+            <FileSpreadsheet size={28} color="#22D3EE" />
+            <div>
+              <h2 style={{ margin: 0, fontSize: 20 }}>Network dataset upload</h2>
+              <p style={{ ...muted, margin: "5px 0 0" }}>
+                CSV only · Preview up to 10 GiB · Evaluation up to 100 MiB
+              </p>
+            </div>
+          </div>
+
+          <label
+            htmlFor="dataset-file"
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 10,
+              padding: 30,
+              border: "1px dashed #3B6478",
+              borderRadius: 12,
+              background: "rgba(8,47,73,.25)",
+              cursor: "pointer",
+              textAlign: "center",
+            }}
+          >
+            <Upload size={30} color="#22D3EE" />
+            <strong>{file ? file.name : "Choose a CSV dataset"}</strong>
+            <span style={muted}>
+              {file
+                ? `${(file.size / 1048576).toFixed(2)} MB`
+                : "Click to browse files on your Mac"}
+            </span>
+            <input
+              id="dataset-file"
+              type="file"
+              accept=".csv,text/csv"
+              style={{ display: "none" }}
+              onChange={chooseFile}
+            />
+          </label>
+
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginTop: 16 }}>
+            <button
+              style={button}
+              onClick={upload}
+              disabled={busy || evaluating || !file || !file.name.toLowerCase().endsWith(".csv") || file.size > 10 * 1024 * 1024 * 1024}
+            >
+              {busy ? <RefreshCw size={17} /> : <Upload size={17} />}
+              {busy ? "Analyzing CSV..." : "Upload & Analyze"}
+            </button>
+
+            <button
+              style={{ ...button, background: "#C4B5FD", color: "#24134A" }}
+              onClick={runDatasetIntelligence}
+              disabled={busy || evaluating || intelligenceLoading || !file || !file.name.toLowerCase().endsWith(".csv") || file.size > 100 * 1024 * 1024}
+            >
+              {intelligenceLoading ? <RefreshCw size={17} /> : <Brain size={17} />}
+              {intelligenceLoading ? "Profiling dataset..." : "Run Dataset Intelligence"}
+            </button>
+            <button
+              style={secondaryButton}
+              onClick={runEvaluation}
+              disabled={busy || evaluating || !file || !file.name.toLowerCase().endsWith(".csv") || file.size > 100 * 1024 * 1024}
+            >
+              {evaluating ? <RefreshCw size={17} /> : <Brain size={17} />}
+              {evaluating ? "Training and evaluating..." : "Run Model Evaluation"}
+            </button>
+          </div>
+
+          <div style={{ marginTop: 14 }}>
+            <label htmlFor="label-column" style={{ ...muted, display: "block", marginBottom: 6 }}>
+              Label column (optional if auto-detected)
+            </label>
+            <input
+              id="label-column"
+              value={labelColumn}
+              onChange={(event) => setLabelColumn(event.target.value)}
+              placeholder="e.g. Label or Attack"
+              style={{
+                width: "100%",
+                maxWidth: 420,
+                boxSizing: "border-box",
+                background: "#0B1220",
+                color: "#E2E8F0",
+                border: "1px solid #334155",
+                borderRadius: 8,
+                padding: 11,
+              }}
+            />
+          </div>
+
+          <p style={muted}>
+            Preview inspects the CSV. Evaluation trains a separate Random Forest
+            model using supported numeric features and a held-out test split.
+            Neither action automatically creates firewall blocks.
+          </p>
+        </section>
+
+        {error && (
+          <div
+            role="alert"
+            style={{
+              ...panel,
+              color: "#FCA5A5",
+              borderColor: "#7F1D1D",
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+            }}
+          >
+            <AlertCircle size={20} />
+            <span>{error}</span>
+          </div>
+        )}
+
+        {data && (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", gap: 12 }}>
+              {[
+                ["ROWS", data.rows],
+                ["COLUMNS", data.columns_count],
+                ["NUMERIC FEATURES", data.numeric_columns.length],
+                ["LABEL TYPES", Object.keys(data.label_distribution || {}).length],
+              ].map(([label, value]) => (
+                <div key={label} style={panel}>
+                  <div style={{ ...muted, letterSpacing: 1 }}>{label}</div>
+                  <div style={{ fontSize: 27, fontWeight: 800, marginTop: 8 }}>
+                    {Number(value).toLocaleString()}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <section style={panel}>
+              <h3 style={{ marginTop: 0 }}>Dataset summary</h3>
+              <p style={muted}>File: {data.filename}</p>
+              <p style={muted}>Label column: {data.label_column || "Not detected"}</p>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {data.columns.map((column) => (
+                  <span
+                    key={column}
+                    style={{
+                      border: "1px solid #334155",
+                      background: "#111E30",
+                      padding: "5px 9px",
+                      borderRadius: 7,
+                      fontSize: 12,
+                    }}
+                  >
+                    {column}
+                  </span>
+                ))}
+              </div>
+            </section>
+
+            {Object.keys(data.label_distribution || {}).length > 0 && (
+              <section style={panel}>
+                <h3 style={{ marginTop: 0 }}>Label distribution</h3>
+                {Object.entries(data.label_distribution).map(([label, count]) => {
+                  const max = Math.max(1, ...Object.values(data.label_distribution));
+                  return (
+                    <div
+                      key={label}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(80px,1fr) 2fr auto",
+                        gap: 12,
+                        alignItems: "center",
+                        margin: "13px 0",
+                      }}
+                    >
+                      <span style={{ fontSize: 13, overflowWrap: "anywhere" }}>{label}</span>
+                      <div style={{ height: 8, borderRadius: 9, background: "#263449", overflow: "hidden" }}>
+                        <div
+                          style={{
+                            height: "100%",
+                            width: `${Math.max(2, (count / max) * 100)}%`,
+                            background: "#22D3EE",
+                          }}
+                        />
+                      </div>
+                      <strong>{count.toLocaleString()}</strong>
+                    </div>
+                  );
+                })}
+              </section>
+            )}
+
+            {Object.keys(data.label_distribution || {}).length > 1 && (
+              <section style={panel}>
+                <h3 style={{ marginTop: 0 }}>Advanced dataset quality analysis</h3>
+                {(() => {
+                  const counts = Object.values(data.label_distribution).map(Number);
+                  const largest = Math.max(...counts);
+                  const smallest = Math.min(...counts);
+                  const ratio = smallest > 0 ? largest / smallest : Infinity;
+                  return (
+                    <>
+                      <p style={muted}>
+                        Largest class: {largest.toLocaleString()} rows ·
+                        Smallest class: {smallest.toLocaleString()} rows
+                      </p>
+                      <p style={{
+                        color: ratio >= 5 ? "#FBBF24" : "#4ADE80",
+                        fontWeight: 700
+                      }}>
+                        {ratio >= 5
+                          ? `Potential class imbalance detected (${ratio.toFixed(1)}:1 ratio). Consider stratified splitting and training-only resampling.`
+                          : `No severe class imbalance detected (${ratio.toFixed(1)}:1 ratio).`}
+                      </p>
+                      <p style={muted}>
+                        This is a class-frequency check, not proof of dataset quality
+                        or model generalization.
+                      </p>
+                    </>
+                  );
+                })()}
+              </section>
+            )}
+
+            <section style={panel}>
+              <h3 style={{ marginTop: 0 }}>First 10 rows</h3>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 12, whiteSpace: "nowrap" }}>
+                  <thead>
+                    <tr>
+                      {data.columns.map((column) => (
+                        <th key={column} style={{ textAlign: "left", padding: 10, borderBottom: "1px solid #334155", color: "#67E8F9" }}>
+                          {column}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.preview.map((row, index) => (
+                      <tr key={index}>
+                        {data.columns.map((column) => (
+                          <td key={column} style={{ padding: 10, borderBottom: "1px solid #1E293B" }}>
+                            {row[column] == null ? "—" : String(row[column])}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+            <p style={muted}>
+              Dataset labels are reported as supplied. They are not independently verified live detections.
+            </p>
+          </>
+        )}
+
+        {evaluation && (
+          <>
+            <section style={{ ...panel, borderColor: "#0E7490" }}>
+              <h2 style={{ marginTop: 0, display: "flex", gap: 10, alignItems: "center" }}>
+                <Brain color="#67E8F9" />
+                Model evaluation results
+              </h2>
+              <p style={muted}>Dataset: {evaluation.filename}</p>
+              <p style={muted}>Label column: {evaluation.label_column}</p>
+              <p style={muted}>
+                Training rows: {evaluation.training_rows.toLocaleString()} ·
+                Testing rows: {evaluation.testing_rows.toLocaleString()} ·
+                Discarded rows: {evaluation.rows_discarded.toLocaleString()}
+              </p>
+
+              {evaluation.testing_rows < 30 && (
+                <div style={{
+                  padding: 12,
+                  marginTop: 12,
+                  borderRadius: 8,
+                  background: "rgba(245,158,11,.10)",
+                  border: "1px solid #92400E",
+                  color: "#FCD34D",
+                  fontSize: 13
+                }}>
+                  Small test set: only {evaluation.testing_rows} rows were evaluated.
+                  Treat these metrics as preliminary, not reliable evidence of
+                  real-world performance.
+                </div>
+              )}
+
+              <button
+                type="button"
+                style={{ ...secondaryButton, marginTop: 14 }}
+                onClick={() => {
+                  const blob = new Blob(
+                    [JSON.stringify(evaluation, null, 2)],
+                    { type: "application/json" }
+                  );
+                  const url = URL.createObjectURL(blob);
+                  const link = document.createElement("a");
+                  link.href = url;
+                  link.download = "sentinelai-evaluation-report.json";
+                  link.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                <Download size={17} />
+                Export evaluation report
+              </button>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12, marginTop: 18 }}>
+                {metricNames.map(([key, title]) => (
+                  <div key={key} style={{ ...panel, background: "#111E30" }}>
+                    <div style={muted}>{title}</div>
+                    <div style={{ fontSize: 27, fontWeight: 800, marginTop: 8 }}>
+                      {`${(evaluation.metrics[key] * 100).toFixed(2)}%`}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section style={panel}>
+              <h3 style={{ marginTop: 0 }}>Per-class performance</h3>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      {["Class", "Precision", "Recall", "F1-score", "Support"].map((title) => (
+                        <th key={title} style={{ padding: 10, textAlign: "left", borderBottom: "1px solid #334155" }}>
+                          {title}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {evaluation.classes.map((label) => {
+                      const item = evaluation.classification_report[label] || {};
+                      return (
+                        <tr key={label}>
+                          <td style={{ padding: 10 }}>{label}</td>
+                          <td style={{ padding: 10 }}>{((item.precision || 0) * 100).toFixed(2)}%</td>
+                          <td style={{ padding: 10 }}>{((item.recall || 0) * 100).toFixed(2)}%</td>
+                          <td style={{ padding: 10 }}>{((item["f1-score"] || 0) * 100).toFixed(2)}%</td>
+                          <td style={{ padding: 10 }}>{item.support ?? 0}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section style={panel}>
+              <h3 style={{ marginTop: 0 }}>Confusion matrix</h3>
+              <p style={muted}>Rows are actual classes; columns are predicted classes.</p>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ padding: 10 }}>Actual / Predicted</th>
+                      {evaluation.classes.map((label) => (
+                        <th key={label} style={{ padding: 10 }}>{label}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {evaluation.confusion_matrix.map((row, index) => (
+                      <tr key={evaluation.classes[index]}>
+                        <th style={{ textAlign: "left", padding: 10 }}>{evaluation.classes[index]}</th>
+                        {row.map((count, columnIndex) => (
+                          <td
+                            key={columnIndex}
+                            style={{
+                              padding: 12,
+                              textAlign: "center",
+                              background: index === columnIndex ? "#164E63" : "#111E30",
+                              border: "1px solid #263449",
+                            }}
+                          >
+                            {count.toLocaleString()}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p style={{ ...muted, marginTop: 16 }}>{evaluation.evaluation_note}</p>
+            </section>
+          </>
+        )}
+
+        {intelligence && (
+          <section style={{ display: "grid", gap: 16 }}>
+            <section style={{ ...panel, borderColor: "#8B5CF6" }}>
+              <h2 style={{ marginTop: 0, color: "#C4B5FD" }}>
+                Dataset Intelligence Report
+              </h2>
+              <p style={muted}>
+                File: {intelligence.filename} ·
+                Analyzed rows: {intelligence.rows_analyzed.toLocaleString()} ·
+                Columns: {intelligence.columns_analyzed}
+              </p>
+              {intelligence.truncated && (
+                <p style={{ color: "#FBBF24", fontSize: 13 }}>
+                  Analysis was limited to the first {intelligence.analysis_limit.toLocaleString()} rows.
+                </p>
+              )}
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))",
+                gap: 12,
+                marginTop: 16
+              }}>
+                {[
+                  ["ROWS ANALYZED", intelligence.rows_analyzed],
+                  ["DUPLICATE ROWS", intelligence.duplicate_rows],
+                  ["MISSING VALUES", intelligence.missing_values_total],
+                  ["INFINITE VALUES", intelligence.infinite_values_total],
+                  ["CONSTANT FEATURES", intelligence.constant_columns.length],
+                  ["LABEL CLASSES", Object.keys(intelligence.label_distribution || {}).length],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ ...panel, background: "#111E30" }}>
+                    <div style={muted}>{label}</div>
+                    <div style={{ fontSize: 25, fontWeight: 800, marginTop: 8 }}>
+                      {Number(value).toLocaleString()}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section style={panel}>
+              <h3 style={{ marginTop: 0 }}>Data quality findings</h3>
+              {intelligence.warnings.length === 0 ? (
+                <p style={{ color: "#4ADE80" }}>No configured quality warnings were detected.</p>
+              ) : (
+                intelligence.warnings.map((warning) => (
+                  <p key={warning} style={{ color: "#FBBF24", margin: "10px 0" }}>
+                    ⚠ {warning}
+                  </p>
+                ))
+              )}
+              <p style={muted}>
+                Constant features: {intelligence.constant_columns.join(", ") || "None"}
+              </p>
+              <p style={muted}>
+                Low-variance features: {intelligence.low_variance_columns.join(", ") || "None"}
+              </p>
+              <p style={muted}>
+                Potential leakage warnings: {intelligence.potential_leakage_warnings.length}
+              </p>
+              {intelligence.potential_leakage_warnings.map((item) => (
+                <p key={item.column} style={{ color: "#FBBF24", fontSize: 13 }}>
+                  {item.column}: {item.reason}
+                </p>
+              ))}
+            </section>
+
+            <section style={panel}>
+              <h3 style={{ marginTop: 0 }}>Numeric feature intelligence</h3>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 700, fontSize: 12 }}>
+                  <thead>
+                    <tr>
+                      {["Feature", "Valid", "Missing", "Mean", "Median", "Std Dev", "Variance", "Unique"].map((heading) => (
+                        <th key={heading} style={{ textAlign: "left", padding: 10, color: "#67E8F9", borderBottom: "1px solid #334155" }}>
+                          {heading}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(intelligence.numeric_features).map(([name, stats]) => (
+                      <tr key={name}>
+                        <td style={{ padding: 10 }}>{name}</td>
+                        <td style={{ padding: 10 }}>{stats.valid_values.toLocaleString()}</td>
+                        <td style={{ padding: 10 }}>{stats.missing_values.toLocaleString()}</td>
+                        {[stats.mean, stats.median, stats.std, stats.variance].map((value, index) => (
+                          <td key={index} style={{ padding: 10 }}>
+                            {value == null ? "N/A" : Number(value).toLocaleString(undefined, { maximumFractionDigits: 3 })}
+                          </td>
+                        ))}
+                        <td style={{ padding: 10 }}>{stats.unique_values.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {Object.keys(intelligence.numeric_features).length === 0 && (
+                <p style={muted}>No numeric features were detected.</p>
+              )}
+            </section>
+
+            <section style={panel}>
+              <h3 style={{ marginTop: 0 }}>Missing values by feature</h3>
+              {Object.keys(intelligence.missing_by_column).length === 0 ? (
+                <p style={{ color: "#4ADE80" }}>No missing values detected.</p>
+              ) : (
+                Object.entries(intelligence.missing_by_column).map(([name, item]) => (
+                  <p key={name} style={muted}>
+                    {name}: {item.count.toLocaleString()} ({item.percentage}%)
+                  </p>
+                ))
+              )}
+            </section>
+
+            <section style={panel}>
+              <h3 style={{ marginTop: 0 }}>Class distribution intelligence</h3>
+              <p style={muted}>
+                Label column: {intelligence.label_column || "Not detected"}
+              </p>
+              <p style={{
+                color: intelligence.class_imbalance_warning ? "#FBBF24" : "#4ADE80",
+                fontWeight: 700
+              }}>
+                {intelligence.class_imbalance_ratio == null
+                  ? "Class imbalance ratio unavailable."
+                  : `Largest-to-smallest class ratio: ${intelligence.class_imbalance_ratio}:1`}
+              </p>
+              {Object.entries(intelligence.label_distribution).map(([label, count]) => (
+                <div key={label} style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  padding: "9px 0",
+                  borderBottom: "1px solid #263449"
+                }}>
+                  <span>{label}</span>
+                  <strong>{count.toLocaleString()}</strong>
+                </div>
+              ))}
+            </section>
+
+            <p style={muted}>{intelligence.note}</p>
+          </section>
+        )}
+      </div>
+    </PageLayout>
+  );
+}

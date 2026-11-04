@@ -1,0 +1,207 @@
+import pandas as pd
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import (
+    accuracy_score,
+    classification_report,
+    confusion_matrix,
+    precision_recall_fscore_support,
+)
+from sklearn.model_selection import train_test_split
+
+
+FEATURE_CANDIDATES = {
+    "packets": [
+        "packets", "total packets", "tot fwd packets",
+        "total fwd packets", "packet_count",
+    ],
+    "bytes": [
+        "bytes", "bytes_transferred", "totlen fwd pkts",
+        "total length of fwd packets", "flow bytes/s",
+    ],
+    "port": [
+        "port", "destination_port", "dst_port",
+        "destination port",
+    ],
+    "failed_attempts": [
+        "failed_attempts", "failed login attempts",
+        "login_failures",
+    ],
+}
+
+LABEL_CANDIDATES = {
+    "label", "class", "attack", "attack_type",
+    "attack type", "category", "target",
+}
+
+
+def evaluate_dataset(file_path, label_column=None, max_rows=200_000):
+    """Evaluate a labelled CSV using a held-out test split."""
+
+    if not 100 <= max_rows <= 500_000:
+        raise ValueError("max_rows must be between 100 and 500000.")
+
+    frame = pd.read_csv(file_path, nrows=max_rows, low_memory=False)
+    frame.columns = [str(column).strip() for column in frame.columns]
+
+    if frame.empty:
+        raise ValueError("The CSV contains no data rows.")
+
+    if label_column is None:
+        label_column = next(
+            (
+                column for column in frame.columns
+                if column.strip().lower() in LABEL_CANDIDATES
+            ),
+            None,
+        )
+
+    if label_column not in frame.columns:
+        raise ValueError(
+            "Label column not found. Supply the exact name of the target column."
+        )
+
+    normalised_columns = {
+        str(column).strip().lower(): column
+        for column in frame.columns
+    }
+
+    selected_features = []
+    for feature_name, candidates in FEATURE_CANDIDATES.items():
+        matched = next(
+            (
+                normalised_columns[name.lower()]
+                for name in candidates
+                if name.lower() in normalised_columns
+            ),
+            None,
+        )
+        if matched is not None and matched != label_column:
+            selected_features.append((feature_name, matched))
+
+    if len(selected_features) < 2:
+        raise ValueError(
+            "At least two recognised numeric traffic features are required. "
+            "This evaluator currently supports packet count, byte count, "
+            "port, and failed-attempt columns."
+        )
+
+    X = frame[[column for _, column in selected_features]].copy()
+    y = frame[label_column].fillna("").astype(str).str.strip()
+
+    for column in X.columns:
+        X[column] = pd.to_numeric(X[column], errors="coerce")
+
+    X = X.replace([float("inf"), float("-inf")], float("nan"))
+    valid = X.notna().all(axis=1) & y.ne("")
+    X = X.loc[valid]
+    y = y.loc[valid]
+
+    if len(X) < 20:
+        raise ValueError("At least 20 valid labelled rows are required.")
+
+    class_counts = y.value_counts()
+    if len(class_counts) < 2:
+        raise ValueError("The dataset must contain at least two label classes.")
+
+    # Stratification requires enough examples of every class.
+    if class_counts.min() < 2:
+        raise ValueError(
+            "Each label class needs at least two valid examples for evaluation."
+        )
+
+    test_count = max(
+        len(class_counts),
+        int(round(len(X) * 0.2)),
+    )
+    if len(X) - test_count < len(class_counts):
+        raise ValueError(
+            "Not enough examples to place every class in both train and test sets."
+        )
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X,
+        y,
+        test_size=test_count,
+        random_state=42,
+        stratify=y,
+    )
+
+    model = RandomForestClassifier(
+        n_estimators=100,
+        random_state=42,
+        class_weight="balanced",
+        n_jobs=-1,
+    )
+    model.fit(X_train, y_train)
+    predictions = model.predict(X_test)
+
+    labels = sorted(y.unique().tolist())
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        y_test,
+        predictions,
+        labels=labels,
+        average="weighted",
+        zero_division=0,
+    )
+
+    report = classification_report(
+        y_test,
+        predictions,
+        labels=labels,
+        output_dict=True,
+        zero_division=0,
+    )
+
+    matrix = confusion_matrix(y_test, predictions, labels=labels)
+    total = int(matrix.sum())
+    false_positive_rates = {}
+
+    for index, label in enumerate(labels):
+        false_positives = int(matrix[:, index].sum() - matrix[index, index])
+        true_negatives = (
+            total
+            - int(matrix[index, :].sum())
+            - int(matrix[:, index].sum())
+            + int(matrix[index, index])
+        )
+        denominator = false_positives + true_negatives
+        false_positive_rates[label] = (
+            round(false_positives / denominator, 4)
+            if denominator else 0.0
+        )
+
+    macro_fpr = (
+        sum(false_positive_rates.values()) / len(false_positive_rates)
+        if false_positive_rates else 0.0
+    )
+
+    return {
+        "status": "completed",
+        "label_column": label_column,
+        "features_used": [column for _, column in selected_features],
+        "rows_read": int(len(frame)),
+        "valid_rows": int(len(X)),
+        "rows_discarded": int(len(frame) - len(X)),
+        "training_rows": int(len(X_train)),
+        "testing_rows": int(len(X_test)),
+        "classes": labels,
+        "class_distribution": {
+            str(key): int(value)
+            for key, value in y.value_counts().items()
+        },
+        "metrics": {
+            "accuracy": round(float(accuracy_score(y_test, predictions)), 4),
+            "weighted_precision": round(float(precision), 4),
+            "weighted_recall": round(float(recall), 4),
+            "weighted_f1": round(float(f1), 4),
+            "macro_false_positive_rate": round(float(macro_fpr), 4),
+        },
+        "false_positive_rates_by_class": false_positive_rates,
+        "classification_report": report,
+        "confusion_matrix": matrix.tolist(),
+        "evaluation_note": (
+            "Metrics use a held-out split of this dataset and the selected "
+            "features. They do not establish real-world detection performance."
+        ),
+    }
