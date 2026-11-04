@@ -35,6 +35,13 @@ export default function DeviceMonitor() {
   const [localSystem, setLocalSystem] = useState(null);
   const [localSystemError, setLocalSystemError] = useState("");
 
+  const [networkHistory, setNetworkHistory] = useState([]);
+  const [networkHistoryLoading, setNetworkHistoryLoading] = useState(false);
+  const [networkHistoryError, setNetworkHistoryError] = useState("");
+  const [networkHistoryMessage, setNetworkHistoryMessage] = useState(
+    "Select a connected device to view its network observations."
+  );
+
   useEffect(() => {
     let active = true;
 
@@ -138,6 +145,69 @@ export default function DeviceMonitor() {
     const timer = setInterval(() => refresh(connectedToken), 5000);
     return () => clearInterval(timer);
   }, [connectedToken, refresh]);
+
+  // Network history uses the separate admin JWT, not the device-monitor token.
+  useEffect(() => {
+    let active = true;
+
+    async function loadNetworkHistory() {
+      if (!selectedDeviceId) {
+        setNetworkHistory([]);
+        setNetworkHistoryMessage("Select a connected device to view its network observations.");
+        return;
+      }
+
+      const adminToken = sessionStorage.getItem("sentinelai_admin_token");
+      if (!adminToken) {
+        setNetworkHistory([]);
+        setNetworkHistoryError("");
+        setNetworkHistoryMessage("Admin login required to view historical network observations.");
+        return;
+      }
+
+      setNetworkHistoryLoading(true);
+      try {
+        const response = await fetch(
+          `${API}/api/x/devices/${encodeURIComponent(selectedDeviceId)}/network?limit=20`,
+          {
+            headers: { Authorization: `Bearer ${adminToken}` },
+            cache: "no-store",
+          }
+        );
+        const body = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          throw new Error(body.detail || `Network history request failed (${response.status})`);
+        }
+
+        if (active) {
+          const observations = Array.isArray(body.observations) ? body.observations : [];
+          setNetworkHistory(observations);
+          setNetworkHistoryError("");
+          setNetworkHistoryMessage(
+            observations.length
+              ? `${observations.length} saved network observation(s) for this device.`
+              : "No network observations have been stored for this device yet."
+          );
+        }
+      } catch (err) {
+        if (active) {
+          setNetworkHistoryError(err.message || "Could not load network history.");
+          setNetworkHistory([]);
+        }
+      } finally {
+        if (active) setNetworkHistoryLoading(false);
+      }
+    }
+
+    loadNetworkHistory();
+    const timer = setInterval(loadNetworkHistory, 30000);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [selectedDeviceId]);
 
   useEffect(() => () => {
     if (watchId.current !== null && navigator.geolocation) navigator.geolocation.clearWatch(watchId.current);
@@ -346,6 +416,95 @@ export default function DeviceMonitor() {
           <Metric icon={Wifi} label="Network sent" value={device.network_sent_mb ?? null} suffix=" MB" />
           <Metric icon={Wifi} label="Network received" value={device.network_recv_mb ?? null} suffix=" MB" />
         </div>
+        <section style={panel}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <h2 style={{ margin: 0, display: "flex", alignItems: "center", gap: 8 }}>
+                <Wifi color="#22D3EE" /> Device network intelligence
+              </h2>
+              <p style={muted}>Connection metadata collected by the selected device agent. Refreshes every 30 seconds.</p>
+            </div>
+            <span style={{ color: "#22D3EE", fontSize: 12, fontWeight: 700 }}>
+              {networkHistoryLoading ? "REFRESHING..." : `${networkHistory.length} OBSERVATION(S)`}
+            </span>
+          </div>
+
+          <p style={muted}>Device: {selectedDeviceId || "No device selected"}</p>
+
+          {networkHistoryError && (
+            <p role="alert" style={{ color: "#FCA5A5" }}>{networkHistoryError}</p>
+          )}
+
+          {!networkHistoryError && (
+            <p style={muted}>{networkHistoryMessage}</p>
+          )}
+
+          {networkHistory.map((observation) => (
+            <div key={observation.id} style={{
+              border: "1px solid #263449",
+              borderRadius: 10,
+              padding: 14,
+              marginTop: 12,
+              background: "#081626",
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                <strong style={{ color: "#E2E8F0" }}>
+                  {observation.connection_count ?? observation.connections?.length ?? 0} active connection record(s)
+                </strong>
+                <span style={muted}>
+                  {observation.captured_at
+                    ? new Date(observation.captured_at).toLocaleString()
+                    : "Timestamp unavailable"}
+                </span>
+              </div>
+
+              <p style={muted}>
+                Restricted processes: {observation.restricted_processes ?? 0}
+              </p>
+
+              {Array.isArray(observation.connections) && observation.connections.length > 0 ? (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
+                    <thead>
+                      <tr style={{ color: "#94A3B8" }}>
+                        {["Protocol", "Local endpoint", "Remote endpoint", "State", "PID"].map(label => (
+                          <th key={label} style={{ padding: "9px 8px", borderBottom: "1px solid #263449" }}>{label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {observation.connections.map((connection, index) => (
+                        <tr key={`${observation.id}-${index}`}>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1E293B" }}>{connection.protocol || "--"}</td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1E293B" }}>
+                            {connection.local_ip || "--"}:{connection.local_port ?? "--"}
+                          </td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1E293B" }}>
+                            {connection.remote_ip || "--"}:{connection.remote_port ?? "--"}
+                          </td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1E293B" }}>{connection.status || "--"}</td>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1E293B" }}>{connection.pid ?? "--"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p style={muted}>No connection records in this observation.</p>
+              )}
+
+              {Array.isArray(observation.warnings) && observation.warnings.length > 0 && (
+                <div style={{ marginTop: 10, color: "#FBBF24", fontSize: 12 }}>
+                  <strong>Collection warnings</strong>
+                  {observation.warnings.map((warning, index) => (
+                    <p key={index} style={{ margin: "5px 0" }}>{String(warning)}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </section>
+
         <section style={panel}>
           <h2 style={{ marginTop: 0, display: "flex", alignItems: "center", gap: 8 }}><MapPin color="#22D3EE" /> Physical location</h2>
           <p style={muted}>Location updates require permission and are sent only while sharing is active in a browser on the Mac you want to track. On another laptop, view the map but do not start sharing location there.</p>

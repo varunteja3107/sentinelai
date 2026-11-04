@@ -41,7 +41,10 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from database import Base, engine, get_db, SessionLocal
 from models import Threat, Device, Incident, ResponseAction, RevokedToken, UserSession, SessionEvent, FirewallRule, AuditLog, BlockSpikeAlert, DeviceAgent, DeviceTelemetry, AdminUser, DeviceAssessment, DeviceAlert, DeviceCredential, SentinelXDriftEvent, SentinelXDetectorState, SentinelXNetworkObservation
-from device_intelligence_service import assess_and_persist
+from device_intelligence_service import (
+    assess_and_persist,
+    assess_network_and_persist,
+)
 from schemas import ThreatCreate, ThreatResponse, ZeroTrustRequest, ZeroTrustResponse, ResponsePlaybookRequest, ResponseActionCreate, ResponseActionReview, ResponseActionRollback
 
 from ai_engine import ThreatDetectionAI
@@ -3815,12 +3818,26 @@ def sentinel_x_ingest_network_telemetry(
             detail="Unable to store network telemetry.",
         )
 
+    try:
+        network_analysis = assess_network_and_persist(db, observation)
+    except Exception:
+        # The observation was already committed. Keep it even if analysis fails.
+        db.rollback()
+        logger.exception(
+            "Network analysis failed for device %s", device_id
+        )
+        network_analysis = {
+            "available": False,
+            "message": "Network observation stored; analysis could not be completed.",
+        }
+
     return {
         "ok": True,
         "device_id": device_id,
         "observation_id": observation.id,
         "connection_count": observation.connection_count,
         "captured_at": now.replace(tzinfo=timezone.utc).isoformat(),
+        "network_analysis": network_analysis,
     }
 
 

@@ -6,7 +6,13 @@ import logging
 from sqlalchemy.orm import Session
 
 from device_intelligence import DeviceIntelligenceEngine
-from models import DeviceTelemetry, DeviceAssessment, DeviceAlert
+from models import (
+    DeviceTelemetry,
+    DeviceAssessment,
+    DeviceAlert,
+    SentinelXNetworkObservation,
+)
+from sentinel_x.network_intelligence import analyze_network_observation
 
 
 logger = logging.getLogger("sentinelai.device_intelligence")
@@ -105,6 +111,7 @@ def assess_and_persist(db: Session, current: DeviceTelemetry):
         db.query(DeviceAlert)
         .filter(
             DeviceAlert.device_id == current.device_id,
+            DeviceAlert.anomaly_type.notlike("network_%"),
             DeviceAlert.status.in_(("OPEN", "ACKNOWLEDGED")),
         )
         .all()
@@ -170,4 +177,80 @@ def assess_and_persist(db: Session, current: DeviceTelemetry):
 
     db.commit()
 
+    return result
+
+
+
+def assess_network_and_persist(db: Session, observation: SentinelXNetworkObservation):
+    """Analyse a stored network snapshot and persist network-only alerts."""
+
+    result = analyze_network_observation(observation)
+    captured_at = observation.captured_at
+
+    active_types = {
+        f"network_{str(item.get('type', 'unknown'))[:70]}"
+        for item in result["findings"]
+    }
+
+    existing_alerts = (
+        db.query(DeviceAlert)
+        .filter(
+            DeviceAlert.device_id == observation.device_id,
+            DeviceAlert.anomaly_type.like("network_%"),
+            DeviceAlert.status.in_(("OPEN", "ACKNOWLEDGED")),
+        )
+        .all()
+    )
+
+    # Resolve only network alerts whose indicators are no longer present.
+    for alert in existing_alerts:
+        if alert.anomaly_type not in active_types:
+            alert.status = "RESOLVED"
+            alert.resolved_at = captured_at
+
+    for finding in result["findings"]:
+        anomaly_type = f"network_{str(finding.get('type', 'unknown'))[:70]}"
+        description = str(finding.get("description", "Network indicator detected"))[:1000]
+        title = f"Network indicator: {finding.get('type', 'unknown')}"[:200]
+        evidence = [finding]
+
+        alert = (
+            db.query(DeviceAlert)
+            .filter(
+                DeviceAlert.device_id == observation.device_id,
+                DeviceAlert.anomaly_type == anomaly_type,
+                DeviceAlert.status.in_(("OPEN", "ACKNOWLEDGED")),
+            )
+            .order_by(DeviceAlert.id.desc())
+            .first()
+        )
+
+        if alert is None:
+            alert = DeviceAlert(
+                alert_key=_alert_key(
+                    observation.device_id,
+                    anomaly_type,
+                    observation.id,
+                ),
+                device_id=observation.device_id,
+                anomaly_type=anomaly_type,
+                severity=str(finding.get("severity", result["severity"])),
+                risk_score=result["risk_score"],
+                title=title,
+                description=description,
+                evidence=evidence,
+                status="OPEN",
+                first_detected_at=captured_at,
+                last_detected_at=captured_at,
+            )
+            db.add(alert)
+        else:
+            alert.severity = str(finding.get("severity", result["severity"]))
+            alert.risk_score = result["risk_score"]
+            alert.title = title
+            alert.description = description
+            alert.evidence = evidence
+            alert.last_detected_at = captured_at
+
+    db.commit()
     return result
