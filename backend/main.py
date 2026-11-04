@@ -40,7 +40,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from database import Base, engine, get_db, SessionLocal
-from models import Threat, Device, Incident, ResponseAction, RevokedToken, UserSession, SessionEvent, FirewallRule, AuditLog, BlockSpikeAlert, DeviceAgent, DeviceTelemetry, AdminUser, DeviceAssessment, DeviceAlert, DeviceCredential, SentinelXDriftEvent, SentinelXDetectorState
+from models import Threat, Device, Incident, ResponseAction, RevokedToken, UserSession, SessionEvent, FirewallRule, AuditLog, BlockSpikeAlert, DeviceAgent, DeviceTelemetry, AdminUser, DeviceAssessment, DeviceAlert, DeviceCredential, SentinelXDriftEvent, SentinelXDetectorState, SentinelXNetworkObservation
 from device_intelligence_service import assess_and_persist
 from schemas import ThreatCreate, ThreatResponse, ZeroTrustRequest, ZeroTrustResponse, ResponsePlaybookRequest, ResponseActionCreate, ResponseActionReview, ResponseActionRollback
 
@@ -3711,6 +3711,163 @@ def _device_monitor_serialize(agent, telemetry=None):
 
     return result
 
+
+
+@app.post("/api/x/telemetry/network", status_code=201)
+def sentinel_x_ingest_network_telemetry(
+    payload: dict,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    device_id = str(payload.get("device_id", "")).strip()[:120]
+
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id is required.")
+
+    _device_monitor_authorize_device(authorization, device_id, db)
+
+    raw_connections = payload.get("connections", [])
+    if not isinstance(raw_connections, list):
+        raise HTTPException(status_code=400, detail="connections must be a list.")
+
+    normalized = []
+
+    for item in raw_connections[:100]:
+        if not isinstance(item, dict):
+            continue
+
+        entry = {}
+
+        for field in ("local_ip", "remote_ip"):
+            value = item.get(field)
+            if value in (None, ""):
+                entry[field] = None
+                continue
+
+            try:
+                entry[field] = str(ipaddress.ip_address(str(value)))
+            except ValueError:
+                entry = None
+                break
+
+        if entry is None:
+            continue
+
+        if not entry.get("local_ip") and not entry.get("remote_ip"):
+            continue
+
+        for field in ("local_port", "remote_port"):
+            value = item.get(field)
+            try:
+                port = int(value) if value is not None else None
+            except (TypeError, ValueError):
+                port = None
+            entry[field] = port if port is not None and 0 <= port <= 65535 else None
+
+        protocol = str(item.get("protocol") or "OTHER").upper()
+        entry["protocol"] = protocol if protocol in {"TCP", "UDP"} else "OTHER"
+
+        entry["status"] = str(item.get("status") or "UNKNOWN")[:32]
+
+        try:
+            pid = int(item.get("pid")) if item.get("pid") is not None else None
+        except (TypeError, ValueError):
+            pid = None
+        entry["pid"] = pid if pid is not None and 0 <= pid <= 2147483647 else None
+
+        normalized.append(entry)
+
+    raw_warnings = payload.get("warnings", [])
+    warnings = (
+        [str(value)[:200] for value in raw_warnings[:10]]
+        if isinstance(raw_warnings, list)
+        else []
+    )
+
+    try:
+        restricted = int(payload.get("restricted_processes", 0))
+    except (TypeError, ValueError):
+        restricted = 0
+
+    restricted = max(0, min(restricted, 100000))
+    now = datetime.utcnow()
+
+    observation = SentinelXNetworkObservation(
+        device_id=device_id,
+        connections=normalized,
+        connection_count=len(normalized),
+        restricted_processes=restricted,
+        warnings=warnings,
+        captured_at=now,
+    )
+
+    try:
+        db.add(observation)
+        db.commit()
+        db.refresh(observation)
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Network telemetry storage failed for device %s", device_id
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Unable to store network telemetry.",
+        )
+
+    return {
+        "ok": True,
+        "device_id": device_id,
+        "observation_id": observation.id,
+        "connection_count": observation.connection_count,
+        "captured_at": now.replace(tzinfo=timezone.utc).isoformat(),
+    }
+
+
+
+
+@app.get("/api/x/devices/{device_id}/network")
+def sentinel_x_get_network_history(
+    device_id: str,
+    limit: int = 20,
+    _admin=Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    """Return recent network observations for one device. Admin only."""
+    device_id = device_id.strip()
+
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id is required.")
+
+    limit = max(1, min(limit, 100))
+
+    observations = (
+        db.query(SentinelXNetworkObservation)
+        .filter(SentinelXNetworkObservation.device_id == device_id)
+        .order_by(
+            SentinelXNetworkObservation.captured_at.desc(),
+            SentinelXNetworkObservation.id.desc(),
+        )
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "ok": True,
+        "device_id": device_id,
+        "count": len(observations),
+        "observations": [
+            {
+                "id": item.id,
+                "connection_count": item.connection_count,
+                "connections": item.connections or [],
+                "restricted_processes": item.restricted_processes,
+                "warnings": item.warnings or [],
+                "captured_at": item.captured_at.isoformat(),
+            }
+            for item in observations
+        ],
+    }
 
 @app.post("/api/device-monitor/report")
 def device_monitor_report(

@@ -356,3 +356,22 @@ Index(
     DeviceAlert.device_id,
     DeviceAlert.status,
 )
+
+
+class SentinelXNetworkObservation(Base):
+    __tablename__ = "sentinel_x_network_observations"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String(120), nullable=False, index=True)
+    connections = Column(JSON, nullable=False, default=list)
+    connection_count = Column(Integer, nullable=False, default=0)
+    restricted_processes = Column(Integer, nullable=False, default=0)
+    warnings = Column(JSON, nullable=False, default=list)
+    captured_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+
+Index(
+    "ix_sentinel_x_network_device_captured",
+    SentinelXNetworkObservation.device_id,
+    SentinelXNetworkObservation.captured_at,
+)
