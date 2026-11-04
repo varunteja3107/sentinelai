@@ -11,6 +11,7 @@ from fastapi import Security
 from schemas import LoginRequest, LoginResponse, AdminCreateRequest
 import os
 import hashlib
+import secrets
 from auth import verify_password, hash_password, create_access_token, verify_access_token
 from schemas import ResponseActionReview
 from schemas import (
@@ -39,7 +40,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from database import Base, engine, get_db, SessionLocal
-from models import Threat, Device, Incident, ResponseAction, RevokedToken, UserSession, SessionEvent, FirewallRule, AuditLog, BlockSpikeAlert, DeviceAgent, DeviceTelemetry, AdminUser, DeviceAssessment, DeviceAlert
+from models import Threat, Device, Incident, ResponseAction, RevokedToken, UserSession, SessionEvent, FirewallRule, AuditLog, BlockSpikeAlert, DeviceAgent, DeviceTelemetry, AdminUser, DeviceAssessment, DeviceAlert, DeviceCredential, SentinelXDriftEvent, SentinelXDetectorState
 from device_intelligence_service import assess_and_persist
 from schemas import ThreatCreate, ThreatResponse, ZeroTrustRequest, ZeroTrustResponse, ResponsePlaybookRequest, ResponseActionCreate, ResponseActionReview, ResponseActionRollback
 
@@ -171,6 +172,158 @@ app.add_middleware(
 )
 
 import hmac
+
+
+
+# =========================================================
+# SENTINELAI-X: ADMIN-MANAGED DEVICE CREDENTIALS
+# =========================================================
+
+@app.post("/api/x/devices/register", status_code=201)
+def register_sentinel_x_device(
+    payload: dict,
+    current_admin: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    device_id = str(payload.get("device_id", "")).strip()
+    device_name = str(payload.get("device_name", "")).strip()
+
+    if not re.fullmatch(r"[A-Za-z0-9._:-]{1,120}", device_id):
+        raise HTTPException(status_code=422, detail="Invalid device_id.")
+
+    if not device_name or len(device_name) > 160:
+        raise HTTPException(status_code=422, detail="device_name is required (maximum 160 characters).")
+
+    platform_name = str(payload.get("platform") or "Unknown").strip()[:80]
+    os_version = str(payload.get("os_version") or "").strip()[:120]
+
+    try:
+        credential = (
+            db.query(DeviceCredential)
+            .filter(DeviceCredential.device_id == device_id)
+            .first()
+        )
+
+        if credential is not None and credential.is_active:
+            raise HTTPException(
+                status_code=409,
+                detail="An active credential already exists for this device.",
+            )
+
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = datetime.utcnow()
+
+        if credential is None:
+            credential = DeviceCredential(
+                device_id=device_id,
+                token_hash=token_hash,
+                is_active=True,
+                created_at=now,
+                last_used_at=None,
+                revoked_at=None,
+            )
+            db.add(credential)
+        else:
+            credential.token_hash = token_hash
+            credential.is_active = True
+            credential.created_at = now
+            credential.last_used_at = None
+            credential.revoked_at = None
+
+        agent = (
+            db.query(DeviceAgent)
+            .filter(DeviceAgent.device_id == device_id)
+            .first()
+        )
+
+        if agent is None:
+            agent = DeviceAgent(
+                device_id=device_id,
+                device_name=device_name,
+                first_seen=now,
+            )
+            db.add(agent)
+
+        agent.device_name = device_name
+        agent.platform = platform_name
+        agent.os_version = os_version
+
+        db.commit()
+
+        return {
+            "ok": True,
+            "device_id": device_id,
+            "device_name": device_name,
+            "token": token,
+            "message": "Save this token securely. It will not be shown again.",
+        }
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Device registration conflict.")
+    except Exception:
+        db.rollback()
+        logger.exception("SentinelAI-X device registration failed")
+        raise HTTPException(status_code=500, detail="Device registration failed.")
+
+
+@app.get("/api/x/devices/credentials")
+def list_sentinel_x_device_credentials(
+    current_admin: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    records = (
+        db.query(DeviceCredential)
+        .order_by(DeviceCredential.created_at.desc())
+        .all()
+    )
+
+    return {
+        "devices": [
+            {
+                "device_id": item.device_id,
+                "active": item.is_active,
+                "created_at": item.created_at.isoformat() if item.created_at else None,
+                "last_used_at": item.last_used_at.isoformat() if item.last_used_at else None,
+                "revoked_at": item.revoked_at.isoformat() if item.revoked_at else None,
+            }
+            for item in records
+        ],
+        "count": len(records),
+    }
+
+
+@app.post("/api/x/devices/{device_id}/revoke")
+def revoke_sentinel_x_device_credential(
+    device_id: str,
+    current_admin: dict = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
+    credential = (
+        db.query(DeviceCredential)
+        .filter(DeviceCredential.device_id == device_id)
+        .first()
+    )
+
+    if credential is None:
+        raise HTTPException(status_code=404, detail="Device credential not found.")
+
+    if credential.is_active:
+        credential.is_active = False
+        credential.revoked_at = datetime.utcnow()
+        db.commit()
+
+    return {
+        "ok": True,
+        "device_id": device_id,
+        "active": False,
+        "message": "Device credential revoked.",
+    }
+
 
 @app.post("/api/auth/login", response_model=LoginResponse)
 def admin_login(payload: LoginRequest):
@@ -3446,6 +3599,50 @@ def _device_monitor_authorize(authorization: str | None) -> None:
         raise HTTPException(status_code=401, detail="Invalid device-monitor token.")
 
 
+def _device_monitor_authorize_device(
+    authorization: str | None,
+    device_id: str,
+    db: Session,
+) -> None:
+    """Authenticate registered devices individually; retain legacy fallback for unregistered devices."""
+    parts = (authorization or "").split(None, 1)
+
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid device-monitor token.")
+
+    supplied_token = parts[1].strip()
+
+    credential = (
+        db.query(DeviceCredential)
+        .filter(DeviceCredential.device_id == device_id)
+        .first()
+    )
+
+    if credential is not None:
+        if not credential.is_active:
+            raise HTTPException(
+                status_code=401,
+                detail="Device credential has been revoked.",
+            )
+
+        supplied_hash = hashlib.sha256(
+            supplied_token.encode("utf-8")
+        ).hexdigest()
+
+        if not hmac.compare_digest(supplied_hash, credential.token_hash):
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid device credential.",
+            )
+
+        credential.last_used_at = datetime.utcnow()
+        return
+
+    # Migration fallback: devices not yet individually registered
+    # continue using the existing shared device-monitor token.
+    _device_monitor_authorize(authorization)
+
+
 def _device_monitor_number(value, default=None):
     if value is None:
         return default
@@ -3521,8 +3718,6 @@ def device_monitor_report(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ):
-    _device_monitor_authorize(authorization)
-
     device_id = str(payload.get("device_id", "")).strip()[:120]
     device_name = str(payload.get("device_name", "")).strip()[:160]
 
@@ -3531,6 +3726,8 @@ def device_monitor_report(
             status_code=400,
             detail="device_id and device_name are required.",
         )
+
+    _device_monitor_authorize_device(authorization, device_id, db)
 
     now = _device_monitor_datetime.utcnow()
 
@@ -3580,6 +3777,35 @@ def device_monitor_report(
 
         db.add(telemetry)
         db.commit()
+
+        # SentinelAI-X: observe committed endpoint telemetry for concept drift.
+        # This is isolated so drift-monitor failures cannot break normal reporting.
+        try:
+            drift_metrics = {
+                "cpu_percent": telemetry.cpu_percent,
+                "memory_percent": telemetry.memory_percent,
+                "disk_percent": telemetry.disk_percent,
+                "battery_percent": telemetry.battery_percent,
+            }
+
+            for metric_name, metric_value in drift_metrics.items():
+                if metric_value is None:
+                    continue
+
+                drift_events = sentinel_x_drift_monitor.update(
+                    device_id=device_id,
+                    metric=metric_name,
+                    value=float(metric_value),
+                )
+                persist_sentinel_x_observation(
+                    db, device_id, metric_name, float(metric_value), drift_events
+                )
+
+        except Exception:
+            logger.exception(
+                "SentinelAI-X drift monitoring failed for device %s",
+                device_id,
+            )
 
         # Intelligence runs after telemetry is safely committed.
         try:
@@ -4058,6 +4284,319 @@ def admin_logout(
         db.close()
 
     return {"message": "Logged out successfully"}
+
+
+
+
+# =========================================================
+# SENTINELAI-X RESEARCH MODEL EVALUATION
+# =========================================================
+
+@app.post("/api/x/datasets/research-evaluate")
+async def evaluate_sentinel_x_dataset(
+    file: UploadFile = File(...),
+    label_column: Optional[str] = None,
+    max_rows_per_class: int = 5000,
+    include_autoencoder: bool = True,
+):
+    """Run SentinelAI-X supervised and unsupervised research experiments."""
+
+    import os
+    import tempfile
+    import pandas as pd
+
+    from sentinel_x.research_engine import evaluate_research_dataset
+
+    filename = file.filename or "dataset.csv"
+
+    if not filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Please upload a CSV file.")
+
+    if not 100 <= max_rows_per_class <= 20000:
+        raise HTTPException(
+            status_code=400,
+            detail="max_rows_per_class must be between 100 and 20000.",
+        )
+
+    max_bytes = 512 * 1024 * 1024
+    total_bytes = 0
+    temp_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            suffix=".csv",
+            prefix="sentinelai_x_research_",
+            delete=False,
+        ) as temp:
+            temp_path = temp.name
+
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+
+                total_bytes += len(chunk)
+                if total_bytes > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="SentinelAI-X research evaluation supports CSV files up to 512 MiB.",
+                    )
+
+                temp.write(chunk)
+
+        if total_bytes == 0:
+            raise HTTPException(status_code=400, detail="The CSV file is empty.")
+
+        try:
+            result = evaluate_research_dataset(
+                temp_path,
+                label_column=label_column,
+                max_rows_per_class=max_rows_per_class,
+                include_autoencoder=include_autoencoder,
+            )
+        except (ValueError, KeyError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except (UnicodeDecodeError, pd.errors.ParserError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not read the CSV: {exc}",
+            ) from exc
+
+        result["filename"] = filename
+        result["upload_size_bytes"] = total_bytes
+        result["upload_limit_bytes"] = max_bytes
+        return result
+
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+        await file.close()
+
+
+
+
+# =========================================================
+# SENTINELAI-X CONCEPT DRIFT MONITORING API
+# =========================================================
+
+from math import isfinite
+from sentinel_x.drift_detector import DriftMonitor
+
+
+class DriftObservationRequest(BaseModel):
+    device_id: str = Field(..., min_length=1, max_length=128)
+    metric: str = Field(
+        ...,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-zA-Z0-9_.-]+$",
+    )
+    value: float
+
+
+sentinel_x_drift_monitor = DriftMonitor()
+
+
+def persist_sentinel_x_observation(db, device_id, metric, value, events):
+    """Persist one metric's detector state and any newly detected events."""
+    from datetime import datetime
+
+    key = f"{device_id}\\n{metric}"
+    exported = sentinel_x_drift_monitor.state_dict()
+    detector_state = exported.get(key)
+
+    if detector_state is None:
+        raise RuntimeError("Detector state was not available for persistence")
+
+    record = (
+        db.query(SentinelXDetectorState)
+        .filter(
+            SentinelXDetectorState.device_id == device_id,
+            SentinelXDetectorState.metric == metric,
+        )
+        .first()
+    )
+
+    if record is None:
+        record = SentinelXDetectorState(
+            device_id=device_id,
+            metric=metric,
+            state=detector_state,
+        )
+        db.add(record)
+    else:
+        record.state = detector_state
+        record.updated_at = datetime.utcnow()
+
+    for event in events:
+        db.add(
+            SentinelXDriftEvent(
+                device_id=event["device_id"],
+                metric=event["metric"],
+                detector=event["detector"],
+                detected_at=datetime.fromisoformat(
+                    event["detected_at"].replace("Z", "+00:00")
+                ).replace(tzinfo=None),
+                value=float(event["value"]),
+                severity=event["severity"],
+                message=event["message"],
+            )
+        )
+
+    db.commit()
+
+
+def restore_sentinel_x_monitor():
+    """Restore detector states and retained event history from the database."""
+    db = SessionLocal()
+    try:
+        state_rows = db.query(SentinelXDetectorState).all()
+        saved_state = {
+            f"{row.device_id}\\n{row.metric}": row.state
+            for row in state_rows
+        }
+
+        if saved_state:
+            sentinel_x_drift_monitor.load_state_dict(saved_state)
+
+        event_rows = (
+            db.query(SentinelXDriftEvent)
+            .order_by(SentinelXDriftEvent.detected_at.desc())
+            .limit(1000)
+            .all()
+        )
+
+        with sentinel_x_drift_monitor._lock:
+            sentinel_x_drift_monitor._events.clear()
+            for row in reversed(event_rows):
+                sentinel_x_drift_monitor._events.append({
+                    "device_id": row.device_id,
+                    "metric": row.metric,
+                    "detector": row.detector,
+                    "detected_at": row.detected_at.isoformat(),
+                    "value": row.value,
+                    "severity": row.severity,
+                    "message": row.message,
+                })
+
+        logger.info(
+            "SentinelAI-X restored %s detector states and %s drift events",
+            len(state_rows),
+            len(event_rows),
+        )
+    except Exception:
+        db.rollback()
+        logger.exception("SentinelAI-X persistence recovery failed")
+    finally:
+        db.close()
+
+
+restore_sentinel_x_monitor()
+
+
+@app.post("/api/x/drift/observe")
+def observe_sentinel_x_drift(
+    payload: DriftObservationRequest,
+    db: Session = Depends(get_db),
+):
+    """Submit one device metric observation to both drift detectors."""
+
+    device_id = payload.device_id.strip()
+    metric = payload.metric.strip()
+
+    if not device_id:
+        raise HTTPException(
+            status_code=422,
+            detail="device_id cannot be empty.",
+        )
+
+    if not isfinite(payload.value):
+        raise HTTPException(
+            status_code=422,
+            detail="value must be a finite number.",
+        )
+
+    try:
+        events = sentinel_x_drift_monitor.update(
+            device_id=device_id,
+            metric=metric,
+            value=payload.value,
+        )
+        try:
+            persist_sentinel_x_observation(
+                db, device_id, metric, payload.value, events
+            )
+        except Exception:
+            db.rollback()
+            logger.exception(
+                "SentinelAI-X drift persistence failed for device %s",
+                device_id,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return {
+        "status": "accepted",
+        "device_id": device_id,
+        "metric": metric,
+        "value": payload.value,
+        "drift_detected": bool(events),
+        "events": events,
+        "monitor": sentinel_x_drift_monitor.get_status(),
+    }
+
+
+@app.get("/api/x/analytics/drift")
+def get_sentinel_x_drift(
+    device_id: Optional[str] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+):
+    """Retrieve retained drift events and detector monitoring status."""
+
+    if limit < 1 or limit > 1000:
+        raise HTTPException(
+            status_code=422,
+            detail="limit must be between 1 and 1000.",
+        )
+
+    if device_id is not None and not device_id.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="device_id cannot be empty.",
+        )
+
+    query = db.query(SentinelXDriftEvent)
+    if device_id:
+        query = query.filter(
+            SentinelXDriftEvent.device_id == device_id.strip()
+        )
+
+    rows = (
+        query.order_by(SentinelXDriftEvent.detected_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    events = [
+        {
+            "device_id": row.device_id,
+            "metric": row.metric,
+            "detector": row.detector,
+            "detected_at": row.detected_at.isoformat(),
+            "value": row.value,
+            "severity": row.severity,
+            "message": row.message,
+        }
+        for row in reversed(rows)
+    ]
+
+    return {
+        "monitor": sentinel_x_drift_monitor.get_status(),
+        "events": events,
+        "storage": "database",
+    }
 
 
 # SentinelAI read-only network topology API

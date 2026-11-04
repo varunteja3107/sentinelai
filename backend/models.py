@@ -245,6 +245,57 @@ Index(
 )
 
 
+class DeviceCredential(Base):
+    __tablename__ = "device_credentials"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String(120), nullable=False, unique=True, index=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+
+class SentinelXDriftEvent(Base):
+    __tablename__ = "sentinel_x_drift_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String(128), nullable=False, index=True)
+    metric = Column(String(64), nullable=False)
+    detector = Column(String(40), nullable=False)
+    detected_at = Column(DateTime, nullable=False, index=True)
+    value = Column(Float, nullable=False)
+    severity = Column(String(20), nullable=False)
+    message = Column(String(500), nullable=False)
+
+
+Index(
+    "ix_sentinel_x_drift_device_detected",
+    SentinelXDriftEvent.device_id,
+    SentinelXDriftEvent.detected_at,
+)
+
+
+class SentinelXDetectorState(Base):
+    __tablename__ = "sentinel_x_detector_state"
+
+    id = Column(Integer, primary_key=True, index=True)
+    device_id = Column(String(128), nullable=False)
+    metric = Column(String(64), nullable=False)
+    state = Column(JSON, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "uq_sentinel_x_detector_device_metric",
+            "device_id",
+            "metric",
+            unique=True,
+        ),
+    )
+
+
 class AdminUser(Base):
     __tablename__ = "admin_users"
 
