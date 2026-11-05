@@ -3777,6 +3777,12 @@ def sentinel_x_ingest_network_telemetry(
         except (TypeError, ValueError):
             pid = None
         entry["pid"] = pid if pid is not None and 0 <= pid <= 2147483647 else None
+        process_name = item.get("process_name")
+        entry["process_name"] = (
+            process_name.strip()[:128]
+            if isinstance(process_name, str) and process_name.strip()
+            else None
+        )
 
         normalized.append(entry)
 

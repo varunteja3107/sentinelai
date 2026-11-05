@@ -467,7 +467,7 @@ export default function DeviceMonitor() {
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
                     <thead>
                       <tr style={{ color: "#94A3B8" }}>
-                        {["Protocol", "Local endpoint", "Remote endpoint", "State", "PID"].map(label => (
+                        {["Process", "Protocol", "Local endpoint", "Remote endpoint", "State", "PID"].map(label => (
                           <th key={label} style={{ padding: "9px 8px", borderBottom: "1px solid #263449" }}>{label}</th>
                         ))}
                       </tr>
@@ -475,6 +475,7 @@ export default function DeviceMonitor() {
                     <tbody>
                       {observation.connections.map((connection, index) => (
                         <tr key={`${observation.id}-${index}`}>
+                          <td style={{ padding: 8, borderBottom: "1px solid #1E293B", color: "#67E8F9", fontWeight: 600 }}>{connection.process_name || "Unknown process"}</td>
                           <td style={{ padding: 8, borderBottom: "1px solid #1E293B" }}>{connection.protocol || "--"}</td>
                           <td style={{ padding: 8, borderBottom: "1px solid #1E293B" }}>
                             {connection.local_ip || "--"}:{connection.local_port ?? "--"}
